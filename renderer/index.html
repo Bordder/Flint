@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'">
+  <title>Flint</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" id="skip-link" href="#editor">Skip to today's entry</a>
+
+  <!-- PIN gate: shown only when a PIN has been set. A privacy curtain, not
+       encryption — the words on disk are always recoverable. -->
+  <div id="pin-gate" class="pin-gate" hidden>
+    <div class="pin-card" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+      <h1 id="pin-title">Flint</h1>
+      <p class="soft">Enter your PIN to open your journal.</p>
+      <form id="pin-form">
+        <label class="visually-hidden" for="pin-input">PIN</label>
+        <input id="pin-input" type="password" inputmode="numeric" autocomplete="off"
+               pattern="[0-9]*" maxlength="10" aria-describedby="pin-error">
+        <button type="submit" class="primary">Unlock</button>
+      </form>
+      <p id="pin-error" class="pin-error" role="alert"></p>
+      <button id="pin-forgot" class="linklike" type="button" aria-expanded="false">
+        Forgotten your PIN?
+      </button>
+      <div id="pin-recovery" class="pin-recovery" hidden>
+        <p>A forgotten PIN can never lock you out — your words are stored,
+           readable, on this computer, and the PIN only hides this window.</p>
+        <p>To remove a forgotten PIN:</p>
+        <ol>
+          <li>Close Flint.</li>
+          <li>Open this folder in File Explorer:<br>
+              <code id="pin-recovery-path"></code></li>
+          <li>Delete the file <strong>settings.json</strong>.</li>
+          <li>Open Flint again — no PIN, everything still there.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="app-head">
+      <h1>Flint</h1>
+      <p class="tagline">A quiet place for your days. Write as much or as little as you like — gaps are fine.</p>
+      <p id="day-count" class="day-count"></p>
+    </header>
+
+    <main>
+      <p id="load-notice" class="notice" role="alert" hidden></p>
+      <div id="update-banner" class="update-banner" role="status" aria-live="polite" hidden></div>
+
+      <!-- ————— Today / any day editor ————— -->
+      <section id="editor" class="card" aria-labelledby="editor-heading">
+        <div class="editor-head">
+          <h2 id="editor-heading">Your day</h2>
+          <div class="date-row">
+            <label for="entry-date">Day</label>
+            <input type="date" id="entry-date">
+            <button id="today-btn" class="ghost" type="button">Today</button>
+          </div>
+          <p id="editor-sub" class="soft"></p>
+        </div>
+
+        <div id="sections"><!-- prompt boxes are built in app.js from your saved prompts --></div>
+
+        <div class="extras">
+          <div class="extra-block">
+            <span class="extra-label" id="day-marker-label">How was today? <span class="soft small">(optional)</span></span>
+            <div class="day-marker" id="day-marker" role="group" aria-labelledby="day-marker-label"></div>
+          </div>
+          <div class="extra-block">
+            <label class="extra-label" for="tag-input">Tags <span class="soft small">(optional — press Enter to add)</span></label>
+            <div class="tag-editor">
+              <div id="tag-list" class="tag-list"></div>
+              <input type="text" id="tag-input" autocomplete="off" placeholder="e.g. migraine, good news">
+            </div>
+          </div>
+        </div>
+
+        <div class="save-row">
+          <button id="save-btn" class="primary" type="button">Save this day</button>
+          <span id="status" role="status" aria-live="polite" class="status"></span>
+        </div>
+        <p class="soft small">Everything is optional. Saving a day with nothing on it removes it.</p>
+      </section>
+
+      <!-- ————— Past days ————— -->
+      <section class="card" aria-labelledby="past-heading">
+        <h2 id="past-heading" tabindex="-1">Past days</h2>
+        <div class="filters">
+          <div class="filter">
+            <label for="search-input">Search</label>
+            <input type="search" id="search-input" placeholder="a word or phrase">
+          </div>
+          <div class="filter">
+            <label for="from-date">From</label>
+            <input type="date" id="from-date">
+          </div>
+          <div class="filter">
+            <label for="to-date">To</label>
+            <input type="date" id="to-date">
+          </div>
+          <button id="clear-filters" class="ghost" type="button">Clear</button>
+        </div>
+        <p id="list-summary" class="soft" aria-live="polite"></p>
+        <div id="days-list"></div>
+      </section>
+
+      <!-- ————— Export ————— -->
+      <section class="card" aria-labelledby="export-heading">
+        <h2 id="export-heading">Take your journal with you</h2>
+        <p class="soft">Every day, oldest first — as a plain text file, a tidy PDF, or copied
+           ready to paste. Easy to read or hand to someone helping you.</p>
+        <div class="btn-row">
+          <button id="export-file-btn" type="button">Save as a text file…</button>
+          <button id="export-pdf-btn" type="button">Save as a PDF…</button>
+          <button id="export-copy-btn" type="button">Copy everything</button>
+        </div>
+        <p id="export-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <!-- ————— Settings ————— -->
+      <details class="card settings">
+        <!-- a heading inside <summary> loses its semantics to the disclosure
+             button, so this is a styled span on purpose -->
+        <summary><span class="summary-heading">Settings &amp; where your words live</span></summary>
+
+        <div class="settings-block">
+          <h3>Where your words live</h3>
+          <p class="soft">Everything is saved on this computer only:</p>
+          <p><code id="data-path"></code></p>
+          <p class="soft">Every save also keeps a dated backup copy — the last 30 are kept in the
+             <code>backups</code> folder next to it.</p>
+          <button id="open-folder-btn" type="button">Open that folder</button>
+        </div>
+
+        <div class="settings-block">
+          <h3>Your daily prompts</h3>
+          <p class="soft">These are the boxes you fill in each day. Rename them, add your own,
+             reorder or remove them — make the journal about whatever you like.</p>
+          <p class="soft small">Removing a prompt only hides it. Anything you already wrote under it
+             stays saved and still shows in past days and exports.</p>
+          <div id="prompts-list" class="prompts-list"></div>
+          <div class="btn-row prompts-actions">
+            <button id="prompt-add-btn" type="button">Add a prompt</button>
+            <button id="prompt-save-btn" class="primary" type="button">Save prompts</button>
+            <button id="prompt-reset-btn" class="ghost" type="button">Undo changes</button>
+          </div>
+          <p id="prompts-status" class="status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="settings-block">
+          <h3>Appearance</h3>
+          <label class="toggle-row">
+            <input type="checkbox" id="theme-toggle">
+            <span>Dark mode (easier on the eyes in a dim room)</span>
+          </label>
+        </div>
+
+        <div class="settings-block">
+          <h3>PIN lock</h3>
+          <p class="soft" id="pin-explain"></p>
+          <p id="pin-status" class="status" role="status" aria-live="polite"></p>
+          <div id="pin-settings"></div>
+        </div>
+
+        <div class="settings-block">
+          <h3>Updates</h3>
+          <p class="soft" id="version-line">Flint version —</p>
+          <label class="toggle-row">
+            <input type="checkbox" id="update-toggle" checked>
+            <span>Check for a new version when Flint opens</span>
+          </label>
+          <div class="btn-row" style="margin-top:0.6rem">
+            <button id="update-check-btn" type="button">Check now</button>
+          </div>
+          <p id="update-setting-status" class="status" role="status" aria-live="polite"></p>
+          <p class="soft small">Checking only ever <em>downloads</em> a new version — your notes are
+             never sent anywhere. With this off, or with no internet, Flint stays fully offline.</p>
+        </div>
+
+        <div class="settings-block">
+          <h3>Privacy &amp; internet</h3>
+          <p class="soft">Your journal never leaves this computer. The window you write in
+             cannot make any internet connection at all. The one and only thing Flint does
+             online is the optional update check above — and even that only downloads; it can
+             never send your entries. No accounts, no sync, no analytics.</p>
+        </div>
+      </details>
+    </main>
+
+    <footer class="app-foot soft small">
+      Your notes stay on this computer. The only thing Flint does online is check for updates — it never sends your entries.
+    </footer>
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="../shared/questions.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
