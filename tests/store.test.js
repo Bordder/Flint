@@ -94,7 +94,7 @@ async function main() {
     await assert.rejects(() => store.saveData({ entries: [] }));
   });
 
-  await test('concurrent saves are serialised — last one wins, file stays valid', async () => {
+  await test('concurrent saves are serialised, last one wins, file stays valid', async () => {
     const jobs = [];
     for (let i = 0; i < 20; i++) {
       const data = store.emptyData();
@@ -118,13 +118,17 @@ async function main() {
     data.entries['2026-03-02'] = { food: 'Soup with help from Mum.', out: '', updatedAt: 'x' };
     data.entries['2026-01-15'] = { walking: 'Two rests on the way to the shop.', updatedAt: 'x' };
     data.entries['2026-02-01'] = { other: '   ' }; // effectively empty: excluded
+    const qs = [
+      { key: 'food', title: 'Food and cooking', hint: '' },
+      { key: 'walking', title: 'Walking and standing', hint: '' },
+      { key: 'out', title: 'Going out', hint: '' }
+    ];
     const text = store.buildExportText(data, {
-      questions: store.DEFAULT_QUESTIONS,
-      now: new Date('2026-07-15T14:00:00')
+      questions: qs, now: new Date('2026-07-15T14:00:00')
     });
 
-    assert.match(text, /Flint export/);
-    assert.match(text, /Days recorded: 2/);
+    assert.match(text, /FLINT JOURNAL/);
+    assert.match(text, /2 days recorded/);
     const jan = text.indexOf(heading('2026-01-15'));
     const mar = text.indexOf(heading('2026-03-02'));
     assert.ok(jan !== -1 && mar !== -1, 'both days present');
@@ -139,10 +143,7 @@ async function main() {
   await test('export includes the day marker and tags', async () => {
     const data = store.emptyData();
     data.entries['2026-04-10'] = {
-      food: 'Managed a sandwich.',
-      __day: 'hard',
-      __tags: ['migraine', 'work'],
-      updatedAt: 'x'
+      food: 'Managed a sandwich.', __day: 'hard', __tags: ['migraine', 'work'], updatedAt: 'x'
     };
     const text = store.buildExportText(data, { questions: store.DEFAULT_QUESTIONS });
     assert.match(text, /Overall: Hard day/);
@@ -154,18 +155,17 @@ async function main() {
     data.entries['2026-04-11'] = { __day: 'good', updatedAt: 'x' };
     data.entries['2026-04-12'] = { __tags: ['holiday'], updatedAt: 'x' };
     const text = store.buildExportText(data, { questions: store.DEFAULT_QUESTIONS });
-    assert.match(text, /Days recorded: 2/);
+    assert.match(text, /2 days recorded/);
     assert.match(text, /Good day/);
     assert.match(text, /Tags: holiday/);
   });
 
   await test('answers to a removed prompt are still exported (never lost)', async () => {
     const data = store.emptyData();
-    // "mood" is not one of the current questions — it is an orphaned answer
+    // "mood" is not one of the current questions, it is an orphaned answer
     data.entries['2026-04-13'] = { mood: 'Low but steady.', updatedAt: 'x' };
     const text = store.buildExportText(data, {
-      questions: store.DEFAULT_QUESTIONS,
-      knownTitles: { mood: 'Mood' }
+      questions: store.DEFAULT_QUESTIONS, knownTitles: { mood: 'Mood' }
     });
     assert.match(text, /Mood/);
     assert.match(text, /Low but steady\./);
@@ -174,10 +174,7 @@ async function main() {
   await test('buildExportHtml escapes content and includes marker + tags', async () => {
     const data = store.emptyData();
     data.entries['2026-04-14'] = {
-      food: 'Bread & butter <ok>',
-      __day: 'mixed',
-      __tags: ['a & b'],
-      updatedAt: 'x'
+      food: 'Bread & butter <ok>', __day: 'mixed', __tags: ['a & b'], updatedAt: 'x'
     };
     const html = store.buildExportHtml(data, { questions: store.DEFAULT_QUESTIONS });
     assert.match(html, /Bread &amp; butter &lt;ok&gt;/);
@@ -185,15 +182,44 @@ async function main() {
     assert.ok(!html.includes('<ok>'), 'raw angle brackets are escaped');
   });
 
+  await test('markdown export has headings, meta and prompt sections', async () => {
+    const data = store.emptyData();
+    data.entries['2026-05-01'] = { note: 'A markdown day.', __day: 'good', __tags: ['a & b'], food: 'Soup.', updatedAt: 'x' };
+    const md = store.buildExportMarkdown(data, { questions: [{ key: 'food', title: 'Food', hint: '' }] });
+    assert.match(md, /^# Flint journal/m);
+    assert.ok(md.includes('## ' + heading('2026-05-01')), 'day heading present');
+    assert.match(md, /\*\*Overall:\*\* Good day/);
+    assert.match(md, /\*\*Tags:\*\* a & b/);
+    assert.match(md, /A markdown day\./);
+    assert.match(md, /^### Food/m);
+    assert.match(md, /Soup\./);
+  });
+
+  await test('import merges new days and never overwrites existing ones', async () => {
+    const current = store.emptyData();
+    current.entries['2026-06-01'] = { note: 'mine, keep this' };
+    const incoming = {
+      version: 1, entries: {
+        '2026-06-01': { note: 'theirs, must not win' },
+        '2026-06-02': { note: 'a genuinely new day' },
+        'not-a-date': { note: 'ignored' }
+      }
+    };
+    const { data, added, skipped } = store.mergeImported(current, incoming);
+    assert.strictEqual(added, 1, 'only the new day is added');
+    assert.strictEqual(skipped, 1, 'the clashing day is skipped');
+    assert.strictEqual(data.entries['2026-06-01'].note, 'mine, keep this', 'an existing day is never overwritten');
+    assert.strictEqual(data.entries['2026-06-02'].note, 'a genuinely new day');
+    assert.ok(!data.entries['not-a-date'], 'a key that is not a date is ignored');
+  });
+
   await test('prompts default, then save + normalise (dedupe keys, drop blank, keep titles)', async () => {
     const def = await store.loadQuestions();
     assert.ok(def.length >= 1 && def[0].key, 'defaults load when none saved');
 
     const saved = await store.saveQuestions([
-      { key: 'work', title: 'Work', hint: 'How was work?' },
-      { key: 'work', title: 'Duplicate key', hint: '' }, // clashing key gets regenerated
-      { title: '   ', hint: 'blank title dropped' },
-      { title: 'Gratitude' } // no key -> generated
+      { key: 'work', title: 'Work', hint: 'How was work?' }, { key: 'work', title: 'Duplicate key', hint: '' }, // clashing key gets regenerated
+      { title: '   ', hint: 'blank title dropped' }, { title: 'Gratitude' } // no key -> generated
     ]);
     assert.strictEqual(saved.length, 3, 'blank-title prompt dropped');
     const keys = saved.map((q) => q.key);
@@ -213,24 +239,32 @@ async function main() {
   });
 
   await test('removing a default prompt still labels its old answers by title', async () => {
-    // save a set that does NOT include the default "eating" prompt
-    await store.saveQuestions([{ key: 'food', title: 'Food and cooking' }]);
+    // save a set that does NOT include the default "challenge" prompt
+    await store.saveQuestions([{ key: 'highlight', title: 'A good moment' }]);
     const titles = await store.knownTitles();
-    assert.strictEqual(titles.eating, 'Eating and drinking', 'default title still resolvable');
+    assert.strictEqual(titles.challenge, 'Something hard', 'default title still resolvable');
 
     const data = store.emptyData();
-    data.entries['2026-08-01'] = { eating: 'Skipped lunch, no appetite.', updatedAt: 'x' };
+    data.entries['2026-08-01'] = { challenge: 'A rough afternoon, but I got through it.', updatedAt: 'x' };
     const questions = await store.loadQuestions();
     const text = store.buildExportText(data, { questions, knownTitles: titles });
-    assert.match(text, /Eating and drinking/);
-    assert.match(text, /Skipped lunch/);
+    assert.match(text, /Something hard/);
+    assert.match(text, /rough afternoon/);
   });
 
-  await test('theme get/set persists', async () => {
+  await test('theme get/set persists (light / dark / system)', async () => {
     assert.strictEqual(await store.getTheme(), 'light', 'defaults to light');
     assert.strictEqual(await store.setTheme('dark'), 'dark');
     assert.strictEqual(await store.getTheme(), 'dark');
+    assert.strictEqual(await store.setTheme('system'), 'system', 'system is accepted');
+    assert.strictEqual(await store.getTheme(), 'system');
     assert.strictEqual(await store.setTheme('nonsense'), 'light', 'unknown value falls back to light');
+  });
+
+  await test('onboarding flag defaults false, then persists', async () => {
+    assert.strictEqual(await store.getOnboarded(), false, 'off until completed');
+    assert.strictEqual(await store.setOnboarded(true), true);
+    assert.strictEqual(await store.getOnboarded(), true);
   });
 
   await test('update-check setting defaults on, then persists off/on', async () => {
@@ -262,6 +296,315 @@ async function main() {
     const { data: loaded } = await store.loadData();
     assert.strictEqual(loaded.entries['2026-06-01'].other, 'still here after PIN removal');
   });
+
+  // ----------------------------------------------------------- encryption
+  // These run last and in their own root, because turning encryption on
+  // changes module-level session state (the in-memory data key).
+
+  const secret = 'A quiet note only I should be able to read.';
+  let recoveryCode = null;
+  let mediaId = null;
+  const photoBytes = Buffer.from('89504e470d0a1a0a' + 'ab'.repeat(96), 'hex'); // a stand-in PNG
+
+  const cryptoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-crypto-'));
+  const PC = store.init(cryptoRoot);
+
+  await test('enableEncryption turns entries.json into an unreadable vault', async () => {
+    await store.securityStatus(); // sync module state to the fresh empty root
+    const data = store.emptyData();
+    data.entries['2026-09-01'] = { note: secret, updatedAt: 'x' };
+    await store.saveData(data);
+    assert.ok(fs.readFileSync(PC.dataFile, 'utf8').includes(secret), 'plaintext before encrypting');
+
+    const res = await store.enableEncryption('1234');
+    assert.ok(res.ok, 'encryption enabled');
+    assert.match(res.recoveryCode, /^[A-Z0-9]{4}(-[A-Z0-9]{4}){4}$/, 'a grouped recovery code is returned');
+    recoveryCode = res.recoveryCode;
+
+    const raw = fs.readFileSync(PC.dataFile, 'utf8');
+    assert.ok(!raw.includes(secret), 'the words are no longer on disk in the clear');
+    const vault = JSON.parse(raw);
+    assert.strictEqual(vault.flintEncrypted, 1);
+    assert.ok(vault.pin && vault.recovery && vault.body, 'vault has both wraps and a body');
+
+    const status = await store.securityStatus();
+    assert.deepStrictEqual(
+      { encrypted: status.encrypted, unlocked: status.unlocked },
+      { encrypted: true, unlocked: true }
+    );
+  });
+
+  await test('enableEncryption purges plaintext backups and writes encrypted ones', async () => {
+    const backups = fs.readdirSync(PC.backupsDir).filter((n) => /^entries-.*\.json$/.test(n));
+    assert.ok(backups.length >= 1, 'at least one backup exists');
+    for (const name of backups) {
+      const parsed = JSON.parse(fs.readFileSync(path.join(PC.backupsDir, name), 'utf8'));
+      assert.strictEqual(parsed.flintEncrypted, 1, `${name} is encrypted`);
+    }
+  });
+
+  await test('an unlocked session round-trips saves while encrypted', async () => {
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret, 'decrypts to the original');
+    data.entries['2026-09-02'] = { note: 'A second day, still secret.', updatedAt: 'y' };
+    await store.saveData(data);
+    const { data: again } = await store.loadData();
+    assert.strictEqual(again.entries['2026-09-02'].note, 'A second day, still secret.');
+    assert.strictEqual(JSON.parse(fs.readFileSync(PC.dataFile, 'utf8')).flintEncrypted, 1, 'still a vault');
+  });
+
+  await test('locking hides the words; loadData reports locked, not corrupt', async () => {
+    store.lock();
+    const status = await store.securityStatus();
+    assert.strictEqual(status.unlocked, false, 'locked after lock()');
+    const res = await store.loadData();
+    assert.strictEqual(res.locked, true, 'load reports locked');
+    assert.strictEqual(res.data, undefined, 'no data handed out while locked');
+    const corrupt = fs.readdirSync(PC.dataDir).filter((n) => n.includes('.corrupt-'));
+    assert.strictEqual(corrupt.length, 0, 'a locked vault is never quarantined');
+  });
+
+  await test('the PIN unlocks; a wrong PIN does not', async () => {
+    assert.strictEqual((await store.unlock('0000')).ok, false, 'wrong PIN refused');
+    assert.strictEqual((await store.loadData()).locked, true, 'still locked after a wrong PIN');
+    assert.strictEqual((await store.unlock('1234')).ok, true, 'right PIN accepted');
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret, 'words are back');
+  });
+
+  await test('the recovery code unlocks after a lock (forgotten-PIN path)', async () => {
+    store.lock();
+    assert.strictEqual((await store.unlockWithRecovery('BADX-BADX-BADX-BADX-BADX')).ok, false, 'wrong code refused');
+    const ok = await store.unlockWithRecovery(recoveryCode.toLowerCase().replace(/-/g, ' '));
+    assert.strictEqual(ok.ok, true, 'code accepted despite lower-case and odd spacing');
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret);
+  });
+
+  await test('saving while locked is refused and never overwrites the vault', async () => {
+    store.lock();
+    const data = store.emptyData();
+    data.entries['2026-09-03'] = { note: 'must not be written in the clear', updatedAt: 'z' };
+    await assert.rejects(() => store.saveData(data), /locked/i);
+    const raw = fs.readFileSync(PC.dataFile, 'utf8');
+    assert.strictEqual(JSON.parse(raw).flintEncrypted, 1, 'still a vault');
+    assert.ok(!raw.includes('must not be written'), 'the attempted plaintext never reached disk');
+    await store.unlock('1234'); // leave it unlocked for the next tests
+  });
+
+  await test('changing the PIN rotates the key, so the old PIN and old code both die', async () => {
+    const oldCode = recoveryCode;
+    assert.strictEqual((await store.changeEncryptionPin('nope', '5678')).ok, false, 'wrong current PIN refused');
+    const res = await store.changeEncryptionPin('1234', '5678');
+    assert.ok(res.ok && res.recoveryCode, 'PIN changed and a fresh recovery code issued');
+    assert.notStrictEqual(res.recoveryCode, oldCode, 'the recovery code rotates with the key');
+    recoveryCode = res.recoveryCode;
+
+    store.lock();
+    assert.strictEqual((await store.unlock('1234')).ok, false, 'old PIN no longer works');
+    assert.strictEqual((await store.unlockWithRecovery(oldCode)).ok, false, 'the old recovery code no longer works either');
+    assert.strictEqual((await store.unlock('5678')).ok, true, 'new PIN works');
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret, 'the words survived the rotation');
+  });
+
+  await test('after a PIN change the old PIN cannot open any surviving backup', async () => {
+    // The point of rotating: a backup still carrying the OLD wraps would hand the
+    // old PIN the very same key that opens today's journal.
+    const vaultCrypto = require('../crypto');
+    const names = fs.readdirSync(PC.backupsDir).filter((n) => /^entries-.*\.json$/.test(n));
+    assert.ok(names.length, 'there are backups to check');
+    for (const n of names) {
+      const v = JSON.parse(fs.readFileSync(path.join(PC.backupsDir, n), 'utf8'));
+      assert.strictEqual(v.flintEncrypted, 1, `${n} is a vault`);
+      await assert.rejects(() => vaultCrypto.openWithPin(v, '1234'), `${n} must not open with the old PIN`);
+    }
+  });
+
+  await test('a recovery unlock forces a new PIN, which retires the spent code', async () => {
+    store.lock();
+    const spent = recoveryCode;
+    assert.strictEqual((await store.unlockWithRecovery(spent)).ok, true, 'in with the code');
+    const res = await store.resetSecretsAfterRecovery('4321');
+    assert.ok(res.ok && res.recoveryCode, 'a fresh code is issued');
+    assert.notStrictEqual(res.recoveryCode, spent, 'the new code differs');
+    recoveryCode = res.recoveryCode;
+
+    store.lock();
+    assert.strictEqual((await store.unlockWithRecovery(spent)).ok, false, 'the spent code is dead');
+    assert.strictEqual((await store.unlock('5678')).ok, false, 'the forgotten PIN is dead too');
+    assert.strictEqual((await store.unlock('4321')).ok, true, 'the new PIN works');
+  });
+
+  await test('checkEncryptionPin verifies without changing session state', async () => {
+    assert.strictEqual((await store.checkEncryptionPin('4321')).valid, true, 'correct PIN passes');
+    assert.strictEqual((await store.checkEncryptionPin('0000')).valid, false, 'wrong PIN fails');
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret, 'still unlocked after the checks');
+  });
+
+  await test('an attachment is encrypted beside the words and reads back', async () => {
+    const src = path.join(os.tmpdir(), `flint-test-photo-${Date.now()}.png`);
+    fs.writeFileSync(src, photoBytes);
+    try {
+      const add = await store.addMedia(src);
+      assert.ok(add.ok && add.id, 'the photo was attached');
+      mediaId = add.id;
+
+      const raw = fs.readFileSync(path.join(PC.mediaDir, mediaId));
+      assert.strictEqual(raw.subarray(0, 9).toString(), 'FLINTMED1', 'stored encrypted');
+      assert.ok(!raw.includes(photoBytes), 'the original bytes are not on disk in the clear');
+
+      const got = await store.getMedia(mediaId);
+      assert.ok(got.ok && got.dataUrl.startsWith('data:image/png;base64,'), 'reads back as a png data URL');
+      assert.ok(Buffer.from(got.dataUrl.split(',')[1], 'base64').equals(photoBytes), 'the bytes round-trip exactly');
+    } finally {
+      fs.unlinkSync(src);
+    }
+  });
+
+  await test('a locked journal will not hand back an attachment', async () => {
+    store.lock();
+    assert.strictEqual((await store.getMedia(mediaId)).ok, false, 'refused while locked');
+    await store.unlock('4321');
+  });
+
+  await test('an attachment id is never treated as a path', async () => {
+    assert.strictEqual((await store.getMedia('../../entries.json')).ok, false, 'traversal refused');
+    assert.strictEqual((await store.getMedia('..\\settings.json')).ok, false, 'traversal refused');
+    assert.strictEqual((await store.removeMedia('../../entries.json')).ok, false, 'traversal refused');
+    assert.ok(fs.existsSync(PC.dataFile), 'entries.json is untouched');
+  });
+
+  await test('disableEncryption needs the PIN and restores plaintext', async () => {
+    assert.strictEqual((await store.disableEncryption('0000')).ok, false, 'wrong PIN keeps encryption on');
+    assert.strictEqual(JSON.parse(fs.readFileSync(PC.dataFile, 'utf8')).flintEncrypted, 1, 'still a vault');
+
+    assert.strictEqual((await store.disableEncryption('4321')).ok, true, 'correct PIN turns it off');
+    const raw = fs.readFileSync(PC.dataFile, 'utf8');
+    assert.ok(raw.includes(secret), 'entries are readable plaintext again');
+    const parsed = JSON.parse(raw);
+    assert.ok(!parsed.flintEncrypted && parsed.entries, 'plain journal shape restored');
+
+    const status = await store.securityStatus();
+    assert.strictEqual(status.encrypted, false, 'reports unencrypted');
+    const { data } = await store.loadData();
+    assert.strictEqual(data.entries['2026-09-01'].note, secret, 'still loads normally');
+  });
+
+  await test('turning encryption off returns attachments to the clear too', async () => {
+    const raw = fs.readFileSync(path.join(PC.mediaDir, mediaId));
+    assert.notStrictEqual(raw.subarray(0, 9).toString(), 'FLINTMED1', 'no longer encrypted');
+    assert.ok(raw.equals(photoBytes), 'the original bytes are back');
+    const got = await store.getMedia(mediaId);
+    assert.ok(got.ok, 'still readable with no key held');
+  });
+
+  await test('enableEncryption refuses a too-short PIN', async () => {
+    const res = await store.enableEncryption('12');
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(JSON.parse(fs.readFileSync(PC.dataFile, 'utf8')).flintEncrypted, undefined, 'left as plaintext');
+  });
+
+  await test('an unreadable journal never downgrades encryption or drops the key', async () => {
+    // The disaster: a file held open for a moment by antivirus or a sync client
+    // must NOT be read as "not encrypted". If it were, the key would be dropped
+    // and the next save would write the journal to disk in the clear.
+    const rootU = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-unreadable-'));
+    const PU = store.init(rootU);
+    try {
+      await store.securityStatus();
+      const on = await store.enableEncryption('guardpin');
+      assert.ok(on.ok, 'encrypted for the test');
+
+      // Make entries.json unreadable without changing what it is: a directory in
+      // its place makes readFile fail with EISDIR, exactly like a lock would.
+      fs.unlinkSync(PU.dataFile);
+      fs.mkdirSync(PU.dataFile);
+
+      const st = await store.securityStatus();
+      assert.strictEqual(st.unreadable, true, 'reports that it could not read the file');
+      assert.strictEqual(st.encrypted, true, 'still considers the journal encrypted');
+      assert.strictEqual(st.unlocked, true, 'the key was NOT thrown away');
+
+      // And a save must never quietly become a plaintext write.
+      const d = store.emptyData();
+      d.entries['2026-12-01'] = { note: 'must never be written in the clear' };
+      await assert.rejects(() => store.saveData(d), 'the save fails rather than writing plaintext');
+    } finally {
+      try { fs.rmSync(PU.dataFile, { recursive: true, force: true }); } catch { /* best effort */ }
+      store.init(root);
+    }
+  });
+
+  await test('a save refuses to write plaintext over a vault', async () => {
+    // Belt and braces for the same disaster: even if the in-memory flag were
+    // wrong, the bytes on disk get the final say.
+    const rootG = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-guard-'));
+    const PG = store.init(rootG);
+    try {
+      await store.securityStatus();
+      await store.saveData(store.emptyData());
+      const on = await store.enableEncryption('guardpin');
+      assert.ok(on.ok, 'encrypted');
+      const vaultBytes = fs.readFileSync(PG.dataFile);
+
+      assert.strictEqual((await store.disableEncryption('guardpin')).ok, true, 'back to plaintext');
+      assert.strictEqual((await store.securityStatus()).encrypted, false, 'app believes it is plaintext');
+
+      // A vault reappears underneath the app (a restore, a sync, a stale flag).
+      fs.writeFileSync(PG.dataFile, vaultBytes);
+
+      const d = store.emptyData();
+      d.entries['2026-12-02'] = { note: 'must not clobber the vault' };
+      await assert.rejects(() => store.saveData(d), /lost track of the key/i, 'refused');
+      assert.strictEqual(JSON.parse(fs.readFileSync(PG.dataFile, 'utf8')).flintEncrypted, 1, 'the vault is untouched');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('a vault written at the old cost still opens, and upgrades on unlock', async () => {
+    const nodeCrypto = require('crypto');
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-legacy-'));
+    const PL = store.init(legacyRoot);
+    try {
+      const enc = (k, buf) => {
+        const iv = nodeCrypto.randomBytes(12);
+        const c = nodeCrypto.createCipheriv('aes-256-gcm', k, iv);
+        const ct = Buffer.concat([c.update(buf), c.final()]);
+        return { iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), ct: ct.toString('base64') };
+      };
+      const dk = nodeCrypto.randomBytes(32);
+      // The old format: scrypt N=2^15 and no cost recorded in the slot.
+      const mkWrap = (secret) => {
+        const salt = nodeCrypto.randomBytes(16);
+        const key = nodeCrypto.scryptSync(Buffer.from(secret, 'utf8'), salt, 32, { N: 32768, r: 8, p: 1, maxmem: 96 * 1024 * 1024 });
+        return { salt: salt.toString('base64'), ...enc(key, dk) };
+      };
+      const legacy = {
+        flintEncrypted: 1, kdf: 'scrypt',
+        pin: mkWrap('legacypin'),
+        recovery: mkWrap('LEGACYCODE'),
+        body: enc(dk, Buffer.from(JSON.stringify({ version: 1, entries: { '2026-10-01': { note: 'written long ago' } } }), 'utf8'))
+      };
+      fs.writeFileSync(PL.dataFile, JSON.stringify(legacy, null, 2), 'utf8');
+
+      await store.securityStatus();
+      assert.strictEqual((await store.unlock('legacypin')).ok, true, 'an old vault still opens');
+      const { data } = await store.loadData();
+      assert.strictEqual(data.entries['2026-10-01'].note, 'written long ago', 'old words are readable');
+
+      const after = JSON.parse(fs.readFileSync(PL.dataFile, 'utf8'));
+      assert.strictEqual(after.pin.N, 65536, 'the PIN wrap was rewritten at the current cost');
+      store.lock();
+      assert.strictEqual((await store.unlock('legacypin')).ok, true, 'the same PIN works after the upgrade');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  store.init(root); // restore the main root
 
   console.log(failures === 0 ? '\nAll tests passed.' : `\n${failures} test(s) FAILED.`);
   process.exit(failures === 0 ? 0 : 1);

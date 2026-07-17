@@ -1,4 +1,4 @@
-# Generates assets/icon.ico — a quiet, warm notebook-page icon.
+# Generates assets/icon.ico, a quiet, warm notebook-page icon.
 # Multi-size ICO with PNG-compressed images (fine on Windows 10/11).
 # Rerun any time with:  powershell -ExecutionPolicy Bypass -File scripts\make-icon.ps1
 
@@ -9,7 +9,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $assets = Join-Path $projectRoot "assets"
 New-Item -ItemType Directory -Force $assets | Out-Null
 
-function Draw-JournalPng([int]$size) {
+function Draw-IconPng([int]$size) {
     $bmp = New-Object System.Drawing.Bitmap($size, $size)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -73,7 +73,7 @@ function Draw-JournalPng([int]$size) {
 
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
 $images = @{}
-foreach ($sz in $sizes) { $images[$sz] = Draw-JournalPng $sz }
+foreach ($sz in $sizes) { $images[$sz] = Draw-IconPng $sz }
 
 # ICO container: 6-byte header, 16-byte entry per image, then PNG payloads
 $out = New-Object System.IO.MemoryStream

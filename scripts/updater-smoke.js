@@ -3,7 +3,7 @@
 //   1. it loads and can run a check;
 //   2. it reaches GitHub over the network from the MAIN process
 //      (a nonexistent repo returns 404, which is handled, not crashed);
-//   3. it does NOT travel through the renderer air-gap filter — so the
+//   3. it does NOT travel through the renderer air-gap filter, so the
 //      window that holds your notes stays fully sealed off from the network.
 //   npx electron scripts/updater-smoke.js
 'use strict';

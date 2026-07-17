@@ -3,76 +3,189 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'">
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'; webrtc 'block'; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Flint</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <a class="skip-link" id="skip-link" href="#editor">Skip to today's entry</a>
+  <a class="skip-link" id="skip-link" href="#note">Skip to today's writing</a>
 
-  <!-- PIN gate: shown only when a PIN has been set. A privacy curtain, not
-       encryption — the words on disk are always recoverable. -->
+  <!-- Lock gate: shown when the journal is encrypted (unlock + decrypt) or when
+       a legacy window PIN is set. The recovery area below is built by app.js to
+       match the mode. -->
   <div id="pin-gate" class="pin-gate" hidden>
     <div class="pin-card" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+      <div class="pin-lock" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+      </div>
       <h1 id="pin-title">Flint</h1>
-      <p class="soft">Enter your PIN to open your journal.</p>
+      <p class="soft" id="pin-sub">Enter your PIN to unlock your journal.</p>
       <form id="pin-form">
         <label class="visually-hidden" for="pin-input">PIN</label>
-        <input id="pin-input" type="password" inputmode="numeric" autocomplete="off"
-               pattern="[0-9]*" maxlength="10" aria-describedby="pin-error">
+        <input id="pin-input" type="password" autocomplete="off" maxlength="64" aria-describedby="pin-error">
         <button type="submit" class="primary">Unlock</button>
       </form>
       <p id="pin-error" class="pin-error" role="alert"></p>
-      <button id="pin-forgot" class="linklike" type="button" aria-expanded="false">
-        Forgotten your PIN?
-      </button>
-      <div id="pin-recovery" class="pin-recovery" hidden>
-        <p>A forgotten PIN can never lock you out — your words are stored,
-           readable, on this computer, and the PIN only hides this window.</p>
-        <p>To remove a forgotten PIN:</p>
-        <ol>
-          <li>Close Flint.</li>
-          <li>Open this folder in File Explorer:<br>
-              <code id="pin-recovery-path"></code></li>
-          <li>Delete the file <strong>settings.json</strong>.</li>
-          <li>Open Flint again — no PIN, everything still there.</li>
-        </ol>
+      <button id="pin-forgot" class="linklike" type="button" aria-expanded="false">Forgotten your PIN?</button>
+      <div id="pin-recovery" class="pin-recovery" hidden></div>
+    </div>
+  </div>
+
+  <!-- First-run onboarding: theme choice, then an optional PIN (encryption). -->
+  <div id="onboarding" class="onboarding" hidden>
+    <div class="onboard-card" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
+      <div class="onboard-spark" aria-hidden="true">
+        <svg class="flame-icon" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
       </div>
+
+      <section class="onboard-step" data-step="theme">
+        <h1 id="onboard-title">Welcome to Flint</h1>
+        <p class="soft">A calm, private place to write. Everything you write stays on this computer.</p>
+        <p class="onboard-q">How should it look?</p>
+        <div class="theme-choice" id="onboard-theme" role="group" aria-label="Theme">
+          <button type="button" class="theme-opt" data-theme-pref="light" aria-pressed="false">Light</button>
+          <button type="button" class="theme-opt" data-theme-pref="dark" aria-pressed="false">Dark</button>
+          <button type="button" class="theme-opt" data-theme-pref="system" aria-pressed="false">System</button>
+        </div>
+        <div class="btn-row onboard-actions"><button type="button" class="primary" id="onboard-theme-next">Continue</button></div>
+      </section>
+
+      <section class="onboard-step" data-step="pin" hidden>
+        <h1>Lock your journal?</h1>
+        <p class="soft">This is optional. You can skip it now and turn it on later in Settings.</p>
+        <div class="onboard-note">
+          <svg class="onboard-note-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+          <span>Adding a PIN encrypts your notes on this computer, so the files cannot be read on
+            their own. How well that holds up depends on the PIN you choose, and Flint will show you
+            how long each one would take to guess.</span>
+        </div>
+        <div class="btn-row onboard-actions">
+          <button type="button" class="primary" id="onboard-pin-yes">Set up a PIN</button>
+          <button type="button" id="onboard-pin-no">Not now</button>
+        </div>
+      </section>
+
+      <section class="onboard-step" data-step="pin-entry" hidden>
+        <h1>Choose a PIN</h1>
+        <p class="soft">At least 4 characters. Flint asks for this each time it opens.</p>
+        <p id="onboard-pin-compare" class="soft small"></p>
+        <form id="onboard-pin-form" class="sec-form">
+          <div class="field"><label for="onboard-pin">PIN</label><input type="password" id="onboard-pin" autocomplete="off" maxlength="64"><p id="onboard-pin-hint" class="pin-hint"></p></div>
+          <div class="field"><label for="onboard-pin-confirm">Type it again</label><input type="password" id="onboard-pin-confirm" autocomplete="off" maxlength="64"></div>
+          <p id="onboard-pin-error" class="pin-error" role="alert"></p>
+          <div class="btn-row">
+            <button type="submit" class="primary">Turn on encryption</button>
+            <button type="button" class="ghost" id="onboard-pin-back">Back</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="onboard-step" data-step="recovery" hidden>
+        <h1>Save your recovery code</h1>
+        <p class="soft">This is the only way in if you forget your PIN. It is shown once and never
+          stored, so keep it somewhere safe and separate from this computer.</p>
+        <code id="onboard-recovery-code" class="recovery-code" tabindex="0"></code>
+        <div class="btn-row">
+          <button type="button" id="onboard-copy">Copy code</button>
+          <button type="button" class="primary" id="onboard-recovery-done">I have saved it</button>
+        </div>
+        <p id="onboard-copy-msg" class="soft small" role="status" aria-live="polite"></p>
+      </section>
     </div>
   </div>
 
   <div id="app" class="app" hidden>
-    <header class="app-head">
-      <h1>Flint</h1>
-      <p class="tagline">A quiet place for your days. Write as much or as little as you like — gaps are fine.</p>
-      <p id="day-count" class="day-count"></p>
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="wordmark">Flint</span>
+        <div class="streak-wrap">
+          <button id="streak" class="streak" type="button" aria-label="Your writing streak" aria-haspopup="dialog" aria-expanded="false">
+            <svg class="flame-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+            <span id="streak-count" class="streak-count"></span>
+          </button>
+          <div id="streak-pop" class="streak-pop" role="dialog" aria-label="Your writing streak" hidden></div>
+        </div>
+      </div>
+      <nav class="topbar-actions" aria-label="App controls">
+        <button id="quick-btn" class="icon-btn" type="button" aria-label="Quick note into today" title="Quick note into today (Ctrl+Shift+N)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button id="focus-btn" class="icon-btn" type="button" aria-label="Focus mode" title="Focus mode (Ctrl+Shift+F)" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button id="theme-btn" class="icon-btn" type="button" aria-label="Switch between light and dark" title="Light / dark">
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><g class="rays"><line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.2" y2="6.2"/><line x1="17.8" y1="17.8" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.2" y2="17.8"/><line x1="17.8" y1="6.2" x2="19.6" y2="4.4"/></g></svg>
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+        </button>
+        <button id="stats-btn" class="icon-btn" type="button" aria-label="Your patterns" title="Your patterns">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="5"/><line x1="18" y1="20" x2="18" y2="15"/></svg>
+        </button>
+        <button id="privacy-btn" class="icon-btn" type="button" aria-label="Privacy and what Flint shares" title="Privacy">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4.5 6v5.5c0 4.6 3.2 8 7.5 10 4.3-2 7.5-5.4 7.5-10V6z"/></svg>
+        </button>
+        <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button id="lock-btn" class="icon-btn" type="button" aria-label="Lock Flint now" title="Lock" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+        </button>
+      </nav>
     </header>
 
-    <main>
-      <p id="load-notice" class="notice" role="alert" hidden></p>
-      <div id="update-banner" class="update-banner" role="status" aria-live="polite" hidden></div>
+    <p id="load-notice" class="notice" role="alert" hidden></p>
+    <div id="update-banner" class="update-banner" role="status" aria-live="polite" hidden></div>
 
-      <!-- ————— Today / any day editor ————— -->
-      <section id="editor" class="card" aria-labelledby="editor-heading">
-        <div class="editor-head">
-          <h2 id="editor-heading">Your day</h2>
-          <div class="date-row">
-            <label for="entry-date">Day</label>
-            <input type="date" id="entry-date">
-            <button id="today-btn" class="ghost" type="button">Today</button>
+    <!-- Workspace: calendar and writer -->
+    <main class="workspace">
+      <aside class="nav-pane" aria-label="Your days">
+        <div class="cal-search">
+          <input type="search" id="search-input" placeholder="Search your notes…" aria-label="Search your notes">
+        </div>
+        <div id="search-results" class="search-results" hidden aria-label="Search results"></div>
+
+        <div id="calendar" class="calendar">
+          <div class="cal-head">
+            <button id="cal-prev" class="icon-btn" type="button" aria-label="Previous month">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <span id="cal-label" class="cal-label" aria-live="polite"></span>
+            <button id="cal-next" class="icon-btn" type="button" aria-label="Next month">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+            </button>
           </div>
-          <p id="editor-sub" class="soft"></p>
+          <div class="cal-weekdays" id="cal-weekdays" aria-hidden="true"></div>
+          <div class="cal-grid" id="cal-grid" role="grid"></div>
+          <button id="cal-today" class="ghost cal-today" type="button">Jump to today</button>
         </div>
 
-        <div id="sections"><!-- prompt boxes are built in app.js from your saved prompts --></div>
+        <div id="lookback" class="lookback" aria-label="On this day" hidden></div>
+      </aside>
 
-        <div class="extras">
+      <section class="writer-pane" aria-label="Your day">
+        <div class="writer-head">
+          <h1 id="writer-date" class="writer-date"></h1>
+          <span id="editor-sub" class="soft small"></span>
+        </div>
+
+        <textarea id="note" class="note" placeholder="Write about your day. As much or as little as you like."
+                  aria-label="Your note for this day"></textarea>
+        <div id="note-preview" class="note-preview" aria-label="Preview of your note" hidden></div>
+
+        <div id="prompts-wrap" class="prompts-wrap" hidden>
+          <p class="soft small prompts-intro">Optional guided prompts for this day. Leave any blank.</p>
+          <div id="sections"></div>
+        </div>
+
+        <div id="media-strip" class="media-strip" aria-label="Photos for this day" hidden></div>
+
+        <div class="writer-extras">
           <div class="extra-block">
             <span class="extra-label" id="day-marker-label">How was today? <span class="soft small">(optional)</span></span>
             <div class="day-marker" id="day-marker" role="group" aria-labelledby="day-marker-label"></div>
           </div>
           <div class="extra-block">
-            <label class="extra-label" for="tag-input">Tags <span class="soft small">(optional — press Enter to add)</span></label>
+            <label class="extra-label" for="tag-input">Tags <span class="soft small">(press Enter)</span></label>
             <div class="tag-editor">
               <div id="tag-list" class="tag-list"></div>
               <input type="text" id="tag-input" autocomplete="off" placeholder="e.g. migraine, good news">
@@ -80,69 +193,70 @@
           </div>
         </div>
 
-        <div class="save-row">
-          <button id="save-btn" class="primary" type="button">Save this day</button>
-          <span id="status" role="status" aria-live="polite" class="status"></span>
+        <div class="writer-foot">
+          <button id="photo-btn" class="ghost small" type="button">Add photo</button>
+          <button id="preview-btn" class="ghost small" type="button" aria-pressed="false">Preview</button>
+          <div class="tpl-wrap">
+            <button id="tpl-btn" class="ghost small" type="button" aria-haspopup="menu" aria-expanded="false">Template</button>
+            <div id="tpl-menu" class="tpl-menu" role="menu" hidden></div>
+          </div>
+          <button id="guided-btn" class="ghost small" type="button" aria-pressed="false">Guided prompts</button>
+          <button id="delete-btn" class="danger small" type="button" hidden>Delete this day</button>
+          <span class="writer-foot-spacer"></span>
+          <span id="status" class="status" role="status" aria-live="polite"></span>
+          <button id="save-btn" class="primary" type="button">Save</button>
         </div>
-        <p class="soft small">Everything is optional. Saving a day with nothing on it removes it.</p>
+      </section>
+    </main>
+
+    <footer id="app-foot" class="app-foot small"></footer>
+  </div>
+
+  <!-- Slide-in panels -->
+  <div id="panel-scrim" class="panel-scrim" hidden></div>
+
+  <aside id="settings-panel" class="side-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div class="side-panel-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="icon-btn panel-close" type="button" data-close aria-label="Close settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="side-panel-body">
+      <section class="settings-block">
+        <h3>Appearance</h3>
+        <p class="soft">System follows your Windows light or dark setting.</p>
+        <div class="theme-choice" id="theme-choice" role="group" aria-label="Theme">
+          <button type="button" class="theme-opt" data-theme-pref="light" aria-pressed="false">Light</button>
+          <button type="button" class="theme-opt" data-theme-pref="dark" aria-pressed="false">Dark</button>
+          <button type="button" class="theme-opt" data-theme-pref="system" aria-pressed="false">System</button>
+        </div>
       </section>
 
-      <!-- ————— Past days ————— -->
-      <section class="card" aria-labelledby="past-heading">
-        <h2 id="past-heading" tabindex="-1">Past days</h2>
-        <div class="filters">
-          <div class="filter">
-            <label for="search-input">Search</label>
-            <input type="search" id="search-input" placeholder="a word or phrase">
-          </div>
-          <div class="filter">
-            <label for="from-date">From</label>
-            <input type="date" id="from-date">
-          </div>
-          <div class="filter">
-            <label for="to-date">To</label>
-            <input type="date" id="to-date">
-          </div>
-          <button id="clear-filters" class="ghost" type="button">Clear</button>
+      <section class="settings-block">
+        <h3>Daily reminder</h3>
+        <p class="soft">An optional nudge from this computer to write. It never leaves your machine, and it is skipped if you have already written that day.</p>
+        <label class="toggle-row"><input type="checkbox" id="reminder-toggle"><span>Remind me to write</span></label>
+        <div class="field reminder-time">
+          <label for="reminder-time">At</label>
+          <input type="time" id="reminder-time" value="20:00">
         </div>
-        <p id="list-summary" class="soft" aria-live="polite"></p>
-        <div id="days-list"></div>
+        <p id="reminder-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <!-- ————— Export ————— -->
-      <section class="card" aria-labelledby="export-heading">
-        <h2 id="export-heading">Take your journal with you</h2>
-        <p class="soft">Every day, oldest first — as a plain text file, a tidy PDF, or copied
-           ready to paste. Easy to read or hand to someone helping you.</p>
-        <div class="btn-row">
-          <button id="export-file-btn" type="button">Save as a text file…</button>
-          <button id="export-pdf-btn" type="button">Save as a PDF…</button>
-          <button id="export-copy-btn" type="button">Copy everything</button>
-        </div>
-        <p id="export-status" class="status" role="status" aria-live="polite"></p>
+      <section class="settings-block">
+        <h3>Your streak</h3>
+        <p class="soft">Pick any days you do not plan to write. A day off is stepped over, so it never breaks your streak.</p>
+        <div class="days-off" id="days-off" role="group" aria-label="Days off"></div>
       </section>
 
-      <!-- ————— Settings ————— -->
-      <details class="card settings">
-        <!-- a heading inside <summary> loses its semantics to the disclosure
-             button, so this is a styled span on purpose -->
-        <summary><span class="summary-heading">Settings &amp; where your words live</span></summary>
-
-        <div class="settings-block">
-          <h3>Where your words live</h3>
-          <p class="soft">Everything is saved on this computer only:</p>
-          <p><code id="data-path"></code></p>
-          <p class="soft">Every save also keeps a dated backup copy — the last 30 are kept in the
-             <code>backups</code> folder next to it.</p>
-          <button id="open-folder-btn" type="button">Open that folder</button>
-        </div>
-
-        <div class="settings-block">
-          <h3>Your daily prompts</h3>
-          <p class="soft">These are the boxes you fill in each day. Rename them, add your own,
-             reorder or remove them — make the journal about whatever you like.</p>
-          <p class="soft small">Removing a prompt only hides it. Anything you already wrote under it
-             stays saved and still shows in past days and exports.</p>
+      <section class="settings-block">
+        <h3>Guided prompts</h3>
+        <p class="soft">Optional structured boxes you can turn on for a day (Food, Sleep, People…). They are off by default, because Flint is free-form writing first.</p>
+        <label class="toggle-row"><input type="checkbox" id="guided-toggle"><span>Show guided prompts under each day</span></label>
+        <details class="prompts-editor-wrap">
+          <summary class="linklike">Edit the guided prompts</summary>
+          <p class="soft small">Rename, add, reorder or remove them. Removing one only hides it. Anything you already wrote under it stays saved and still exports.</p>
           <div id="prompts-list" class="prompts-list"></div>
           <div class="btn-row prompts-actions">
             <button id="prompt-add-btn" type="button">Add a prompt</button>
@@ -150,56 +264,105 @@
             <button id="prompt-reset-btn" class="ghost" type="button">Undo changes</button>
           </div>
           <p id="prompts-status" class="status" role="status" aria-live="polite"></p>
-        </div>
+        </details>
+      </section>
 
-        <div class="settings-block">
-          <h3>Appearance</h3>
-          <label class="toggle-row">
-            <input type="checkbox" id="theme-toggle">
-            <span>Dark mode (easier on the eyes in a dim room)</span>
-          </label>
+      <section class="settings-block">
+        <h3>Entry templates</h3>
+        <p class="soft">Reusable scaffolds you can drop into a day with the Template button under your writing.</p>
+        <div id="templates-list" class="templates-list"></div>
+        <div class="btn-row prompts-actions">
+          <button id="tpl-add-btn" type="button">Add a template</button>
+          <button id="tpl-save-btn" class="primary" type="button">Save templates</button>
+          <button id="tpl-reset-btn" class="ghost" type="button">Undo changes</button>
         </div>
+        <p id="templates-status" class="status" role="status" aria-live="polite"></p>
+      </section>
 
-        <div class="settings-block">
-          <h3>PIN lock</h3>
-          <p class="soft" id="pin-explain"></p>
-          <p id="pin-status" class="status" role="status" aria-live="polite"></p>
-          <div id="pin-settings"></div>
+      <section class="settings-block">
+        <h3>Lock &amp; encryption</h3>
+        <p class="soft" id="security-explain"></p>
+        <p id="security-status" class="status" role="status" aria-live="polite"></p>
+        <div id="security-settings"></div>
+      </section>
+
+      <section class="settings-block">
+        <h3>Updates</h3>
+        <p class="soft" id="version-line">Flint version</p>
+        <label class="toggle-row"><input type="checkbox" id="update-toggle" checked><span>Check for a new version when Flint opens</span></label>
+        <div class="btn-row settings-actions"><button id="update-check-btn" type="button">Check now</button></div>
+        <p id="update-setting-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="settings-block">
+        <h3>Take your journal with you</h3>
+        <p class="soft">Every day, oldest first. Text and PDF to read, Markdown to reuse anywhere, JSON to bring back later.</p>
+        <div class="btn-row">
+          <button id="export-file-btn" type="button">Text file…</button>
+          <button id="export-pdf-btn" type="button">PDF…</button>
+          <button id="export-md-btn" type="button">Markdown…</button>
+          <button id="export-json-btn" type="button">JSON…</button>
+          <button id="export-copy-btn" type="button">Copy all</button>
         </div>
+        <p class="soft small">Importing a JSON file only adds days you do not already have. Nothing already written is overwritten.</p>
+        <div class="btn-row"><button id="import-json-btn" type="button">Import JSON…</button></div>
+        <p id="export-status" class="status" role="status" aria-live="polite"></p>
+      </section>
 
-        <div class="settings-block">
-          <h3>Updates</h3>
-          <p class="soft" id="version-line">Flint version —</p>
-          <label class="toggle-row">
-            <input type="checkbox" id="update-toggle" checked>
-            <span>Check for a new version when Flint opens</span>
-          </label>
-          <div class="btn-row" style="margin-top:0.6rem">
-            <button id="update-check-btn" type="button">Check now</button>
-          </div>
-          <p id="update-setting-status" class="status" role="status" aria-live="polite"></p>
-          <p class="soft small">Checking only ever <em>downloads</em> a new version — your notes are
-             never sent anywhere. With this off, or with no internet, Flint stays fully offline.</p>
+      <section class="settings-block">
+        <h3>Backups to another folder</h3>
+        <p class="soft">Flint can drop a dated copy of your journal into a folder you choose (a USB stick, or a folder you already sync), once a day. If your journal is encrypted, the copy is encrypted too.</p>
+        <label class="toggle-row"><input type="checkbox" id="backup-toggle"><span>Keep a daily copy in another folder</span></label>
+        <p class="soft small">Folder: <code id="backup-folder">not chosen yet</code></p>
+        <div class="btn-row">
+          <button id="backup-choose-btn" type="button">Choose folder…</button>
+          <button id="backup-now-btn" type="button">Back up now</button>
         </div>
+        <p id="backup-status" class="status" role="status" aria-live="polite"></p>
+      </section>
 
-        <div class="settings-block">
-          <h3>Privacy &amp; internet</h3>
-          <p class="soft">Your journal never leaves this computer. The window you write in
-             cannot make any internet connection at all. The one and only thing Flint does
-             online is the optional update check above — and even that only downloads; it can
-             never send your entries. No accounts, no sync, no analytics.</p>
-        </div>
-      </details>
-    </main>
+      <section class="settings-block">
+        <h3>Where your words live</h3>
+        <p class="soft">Everything is saved on this computer only:</p>
+        <p><code id="data-path"></code></p>
+        <p class="soft small">Every save keeps a dated backup. The last 30 are kept in the <code>backups</code> folder next to it.</p>
+        <button id="open-folder-btn" type="button">Open that folder</button>
+      </section>
+    </div>
+  </aside>
 
-    <footer class="app-foot soft small">
-      Your notes stay on this computer. The only thing Flint does online is check for updates — it never sends your entries.
-    </footer>
-  </div>
+  <aside id="stats-panel" class="side-panel" role="dialog" aria-modal="true" aria-labelledby="stats-title" hidden>
+    <div class="side-panel-head">
+      <h2 id="stats-title">Your patterns</h2>
+      <button class="icon-btn panel-close" type="button" data-close aria-label="Close patterns">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="side-panel-body" id="stats-body"></div>
+  </aside>
+
+  <aside id="privacy-panel" class="side-panel" role="dialog" aria-modal="true" aria-labelledby="privacy-title" hidden>
+    <div class="side-panel-head">
+      <h2 id="privacy-title">Privacy and what Flint shares</h2>
+      <button class="icon-btn panel-close" type="button" data-close aria-label="Close privacy">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="side-panel-body">
+      <ul class="privacy-list">
+        <li><strong>Your notes never leave this computer.</strong> They're stored in plain files on your PC, and the window you write in cannot make any internet connection at all.</li>
+        <li><strong>No account, no sync, no analytics, no tracking.</strong> Flint doesn't know who you are and never phones home about what you write.</li>
+        <li><strong>The one thing that goes online</strong> is the optional update check (in Settings, under Updates). It only <em>downloads</em> a new version, and can never send your entries. Like any download it reveals your computer's IP to GitHub, and nothing else. Turn it off and Flint is fully offline.</li>
+        <li><strong>Exports stay with you.</strong> Saving a text file or PDF writes to your own Documents folder; copying puts it on your clipboard. Nothing is uploaded.</li>
+        <li id="privacy-encryption"><strong>On disk:</strong> your entries are stored as readable files. Turn on encryption in Settings (Lock &amp; encryption) to scramble them with a PIN, so they cannot be read without it.</li>
+      </ul>
+    </div>
+  </aside>
 
   <div id="modal-root"></div>
 
   <script src="../shared/questions.js"></script>
+  <script src="../shared/templates.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

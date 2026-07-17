@@ -1,56 +1,29 @@
 {
-  "name": "flint",
-  "productName": "Flint",
-  "version": "1.0.0",
-  "description": "Flint — a quiet, private daily journal. Your notes never leave this computer.",
-  "main": "main.js",
-  "license": "UNLICENSED",
-  "private": true,
-  "scripts": {
-    "start": "electron .",
-    "test": "node tests/store.test.js",
-    "dist": "electron-builder --win",
-    "publish": "electron-builder --win --publish always"
-  },
-  "build": {
-    "appId": "com.local.flint",
-    "productName": "Flint",
-    "directories": {
+  "name": "flint", "productName": "Flint", "version": "1.1.0", "description": "Flint, a quiet, private daily journal. Your notes never leave this computer.", "main": "main.js", "license": "UNLICENSED", "private": true, "scripts": {
+    "start": "electron .", "test": "node tests/store.test.js", "dist": "electron-builder --win", "publish": "electron-builder --win --publish always"
+  }, "build": {
+    "appId": "com.local.flint", "productName": "Flint", "directories": {
       "output": "dist"
-    },
-    "artifactName": "Flint-Setup-${version}.${ext}",
-    "files": [
-      "**/*",
-      "!tests/**/*",
-      "!scripts/**/*",
-      "!dist/**/*",
-      "!**/*.md",
-      "!.gitignore"
-    ],
-    "publish": [
+    }, "artifactName": "Flint-Setup-${version}.${ext}", "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }, "files": [
+      "**/*", "!tests/**/*", "!scripts/**/*", "!dist/**/*", "!**/*.md", "!.gitignore", "!*.bat", "!.hallmark/**/*"
+    ], "publish": [
       {
-        "provider": "github",
-        "owner": "Bordder",
-        "repo": "Flint"
+        "provider": "github", "owner": "Bordder", "repo": "Flint"
       }
-    ],
-    "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "deleteAppDataOnUninstall": false
+    ], "win": {
+      "target": "nsis", "icon": "assets/icon.ico"
+    }, "nsis": {
+      "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "deleteAppDataOnUninstall": false
     }
-  },
-  "dependencies": {
+  }, "dependencies": {
     "electron-updater": "^6.6.2"
-  },
-  "devDependencies": {
-    "electron": "^43.1.1",
-    "electron-builder": "^26.15.3"
+  }, "devDependencies": {
+    "electron": "^43.1.1", "electron-builder": "^26.15.3"
   }
 }

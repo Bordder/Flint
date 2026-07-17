@@ -3,14 +3,18 @@
 // Everything lives in plain files under one folder so the whole journal can
 // be found, read, backed up and moved by hand:
 //
-//   <root>/data/entries.json     — every entry, keyed by date (YYYY-MM-DD)
-//   <root>/data/backups/         — rolling timestamped copies, newest 30 kept
-//   <root>/data/settings.json    — the optional PIN, the user's own prompts,
-//                                  the last known prompt titles (so removed
-//                                  prompts' answers can still be labelled), and
-//                                  the light/dark theme choice. Entries are
-//                                  never encrypted, so a lost PIN can never
-//                                  lock the words away.
+//   <root>/data/entries.json, every entry, keyed by date (YYYY-MM-DD)
+//   <root>/data/backups/, rolling timestamped copies, newest 30 kept
+//   <root>/data/settings.json, the user's own prompts, the last known prompt
+//                                  titles (so removed prompts' answers can
+//                                  still be labelled), the light/dark theme
+//                                  choice, and the legacy window PIN.
+//
+// The journal can optionally be encrypted at rest (see crypto.js). When it is,
+// entries.json is an encrypted "vault" instead of plain JSON, backups are
+// encrypted copies of it, and the data key exists only in memory while the app
+// is unlocked with the PIN or the recovery code. When encryption is off,
+// entries.json is plain JSON that can be read and moved by hand.
 //
 // Saves are atomic: write to a temp file, flush to disk, then rename over
 // the real file. A crash mid-save leaves the previous file untouched.
@@ -18,7 +22,7 @@
 // Within an entry, keys beginning with "__" and the key "updatedAt" are
 // reserved by the app (day marker, tags, save time). Every other key holds the
 // answer to a prompt. Answers whose prompt has since been removed are still
-// kept, shown and exported — the app never drops a word the user wrote.
+// kept, shown and exported, the app never drops a word the user wrote.
 
 'use strict';
 
@@ -28,6 +32,26 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { DEFAULT_QUESTIONS, DAY_MARKERS } = require('./shared/questions');
+const { DEFAULT_TEMPLATES } = require('./shared/templates');
+const vaultCrypto = require('./crypto');
+
+// Encryption session state. When the journal is encrypted, `entries.json` is a
+// vault; the data key lives only in this process's memory while unlocked, and
+// is dropped on lock or quit. It is never written to disk in the clear.
+let sessionDk = null;        // the data key (Buffer) while unlocked; else null
+let sessionVault = null;     // the on-disk vault object, reused when re-sealing
+let encryptedOnDisk = false; // whether entries.json is currently a vault
+
+// The data key is a Buffer, so wipe it rather than only dropping the reference.
+// A locked session should not leave the key lying in process memory.
+function setSessionDk(dk) {
+  if (sessionDk && sessionDk !== dk) sessionDk.fill(0);
+  sessionDk = dk;
+}
+function clearSessionDk() {
+  if (sessionDk) sessionDk.fill(0);
+  sessionDk = null;
+}
 
 const BACKUPS_TO_KEEP = 30;
 const MAX_QUESTIONS = 40;
@@ -38,11 +62,7 @@ let P = null;
 
 function init(rootDir) {
   P = {
-    root: rootDir,
-    dataDir: path.join(rootDir, 'data'),
-    dataFile: path.join(rootDir, 'data', 'entries.json'),
-    backupsDir: path.join(rootDir, 'data', 'backups'),
-    settingsFile: path.join(rootDir, 'data', 'settings.json')
+    root: rootDir, dataDir: path.join(rootDir, 'data'), dataFile: path.join(rootDir, 'data', 'entries.json'), backupsDir: path.join(rootDir, 'data', 'backups'), mediaDir: path.join(rootDir, 'data', 'media'), settingsFile: path.join(rootDir, 'data', 'settings.json')
   };
   fs.mkdirSync(P.backupsDir, { recursive: true });
   return { ...P };
@@ -52,16 +72,117 @@ function paths() {
   return { ...P };
 }
 
+// ----------------------------------------------------------------- media
+//
+// Attachments live as one file each, next to the entries, and are referenced
+// from an entry by id under __media. When the journal is encrypted the bytes are
+// encrypted with the same data key, so a photo is no more readable than the
+// words are. An encrypted attachment starts with MEDIA_MAGIC; a plain one is
+// just the raw image. Keeping that marker inside the file (rather than in the
+// name) means ids never change when encryption is switched on or off.
+
+const MEDIA_MAGIC = Buffer.from('FLINTMED1');
+const MEDIA_TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+const MEDIA_ID = /^[a-f0-9]{24}\.(jpg|jpeg|png|gif|webp)$/i;
+const MEDIA_MAX_BYTES = 20 * 1024 * 1024;
+
+// Ids come back from the renderer, so never trust one as a path: only an exact
+// id shape is allowed anywhere near the filesystem.
+function isSafeMediaId(id) { return typeof id === 'string' && MEDIA_ID.test(id); }
+function mediaPath(id) { return path.join(P.mediaDir, id); }
+function isEncryptedBlob(buf) { return buf.length > MEDIA_MAGIC.length && buf.subarray(0, MEDIA_MAGIC.length).equals(MEDIA_MAGIC); }
+
+async function writeFileAtomicRaw(filePath, buf) {
+  const tmp = filePath + '.tmp';
+  const fh = await fsp.open(tmp, 'w');
+  try {
+    await fh.writeFile(buf);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await fsp.rename(tmp, filePath);
+}
+
+async function addMedia(sourcePath) {
+  const ext = path.extname(String(sourcePath)).toLowerCase();
+  const type = MEDIA_TYPES[ext];
+  if (!type) return { ok: false, error: 'That kind of file cannot be attached.' };
+  if (encryptedOnDisk && !sessionDk) return { ok: false, error: 'Your journal is locked.' };
+  const bytes = await fsp.readFile(sourcePath);
+  if (bytes.length > MEDIA_MAX_BYTES) return { ok: false, error: 'That image is bigger than 20 MB.' };
+  await fsp.mkdir(P.mediaDir, { recursive: true });
+  const id = crypto.randomBytes(12).toString('hex') + ext;
+  const blob = encryptedOnDisk ? Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(sessionDk, bytes)]) : bytes;
+  await writeFileAtomicRaw(mediaPath(id), blob);
+  return { ok: true, id, name: path.basename(String(sourcePath)), type };
+}
+
+// Returns the image as a data: URL, which the renderer's CSP allows for images.
+async function getMedia(id) {
+  if (!isSafeMediaId(id)) return { ok: false, error: 'Unknown attachment.' };
+  let blob;
+  try { blob = await fsp.readFile(mediaPath(id)); } catch { return { ok: false, error: 'That attachment is missing.' }; }
+  if (isEncryptedBlob(blob)) {
+    if (!sessionDk) return { ok: false, error: 'Your journal is locked.' };
+    try { blob = vaultCrypto.decryptBuffer(sessionDk, blob.subarray(MEDIA_MAGIC.length)); }
+    catch { return { ok: false, error: 'That attachment could not be decrypted.' }; }
+  }
+  const type = MEDIA_TYPES[path.extname(id).toLowerCase()] || 'application/octet-stream';
+  return { ok: true, dataUrl: `data:${type};base64,${blob.toString('base64')}` };
+}
+
+async function removeMedia(id) {
+  if (!isSafeMediaId(id)) return { ok: false };
+  await fsp.unlink(mediaPath(id)).catch(() => {});
+  return { ok: true };
+}
+
+// Rewrites every attachment to match the journal's encryption state. Without
+// this, turning encryption on would scramble the words while leaving the photos
+// sitting in the clear beside them.
+// Returns the names it could NOT convert. Callers must not report success while
+// this list is non-empty: a photo left in the clear beside an encrypted journal
+// breaks the promise, and one left encrypted after the key is gone is lost.
+async function rewriteMediaEncryption(dk, encrypt) {
+  const failed = [];
+  let names;
+  try { names = await fsp.readdir(P.mediaDir); } catch { return failed; }
+  // Sweep any half-written .tmp leftovers first: they hold raw image bytes and
+  // match no id pattern, so nothing else would ever encrypt or remove them.
+  for (const name of names.filter((n) => n.endsWith('.tmp'))) {
+    await fsp.unlink(path.join(P.mediaDir, name)).catch(() => {});
+  }
+  for (const name of names.filter(isSafeMediaId)) {
+    try {
+      const file = mediaPath(name);
+      const blob = await fsp.readFile(file);
+      const already = isEncryptedBlob(blob);
+      if (encrypt && !already) {
+        await writeFileAtomicRaw(file, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(dk, blob)]));
+      } else if (!encrypt && already) {
+        await writeFileAtomicRaw(file, vaultCrypto.decryptBuffer(dk, blob.subarray(MEDIA_MAGIC.length)));
+      }
+    } catch {
+      failed.push(name);
+    }
+  }
+  return failed;
+}
+
 function emptyData() {
   return { version: 1, entries: {} };
 }
 
+// UTC on purpose. Backup names are sorted as text to find the newest, and local
+// time repeats an hour when the clocks go back: names would collide and the
+// ordering would invert, so "newest backup" could quietly mean an older one.
 function stamp(d = new Date()) {
   const p = (n, l = 2) => String(n).padStart(l, '0');
   return (
-    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
-    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}` +
-    `-${p(d.getMilliseconds(), 3)}`
+    `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}` +
+    `-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}` +
+    `-${p(d.getUTCMilliseconds(), 3)}`
   );
 }
 
@@ -94,12 +215,26 @@ async function writeFileAtomic(filePath, text) {
 
 // ---------------------------------------------------------------- entries
 
+// Decrypts a vault with the in-memory data key. Returns the data object, or a
+// { locked } result if we don't hold the key yet. Never quarantines the file.
+function openVault(vault) {
+  encryptedOnDisk = true;
+  sessionVault = vault;
+  if (!sessionDk) return { locked: true };
+  try {
+    return { data: vaultCrypto.openWithDk(vault, sessionDk), encrypted: true };
+  } catch {
+    return { locked: true, warning: 'Your journal could not be decrypted with the current key.' };
+  }
+}
+
 async function loadData() {
   let raw;
   try {
     raw = await fsp.readFile(P.dataFile, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
+      encryptedOnDisk = false;
       return { data: emptyData() };
     }
     throw new Error(
@@ -108,48 +243,50 @@ async function loadData() {
     );
   }
 
-  try {
-    const parsed = JSON.parse(raw);
-    if (!isValidData(parsed)) throw new Error('unexpected shape');
-    return { data: parsed };
-  } catch {
-    // The file exists but cannot be read as journal data. Never overwrite
-    // it — set it aside and fall back to the newest readable backup.
-    const corruptPath = `${P.dataFile}.corrupt-${stamp()}`;
-    let setAside = true;
-    try {
-      await fsp.rename(P.dataFile, corruptPath);
-    } catch {
-      // Rename can fail if something (antivirus, indexer) holds the file.
-      // A copy still preserves the bytes even though the original stays put.
-      try {
-        await fsp.copyFile(P.dataFile, corruptPath);
-      } catch {
-        setAside = false;
-      }
-    }
-    const keptNote = setAside
-      ? `The unreadable file was kept, unchanged, at: ${corruptPath}`
-      : `The unreadable file could not be copied aside (it may be locked ` +
-        `by another program); it is still at ${P.dataFile} and will be ` +
-        `replaced the next time you save.`;
-    const backup = await newestValidBackup();
-    if (backup) {
-      return {
-        data: backup.data,
-        warning:
-          `Your main journal file could not be read, so the most recent ` +
-          `backup (${backup.name}) was loaded instead. Nothing you save ` +
-          `from now on is affected. ${keptNote}`
-      };
-    }
-    return {
-      data: emptyData(),
-      warning:
-        `Your journal file could not be read and no backup was found, so ` +
-        `Flint is starting empty. ${keptNote}`
-    };
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+
+  if (vaultCrypto.isVault(parsed)) {
+    return openVault(parsed); // encrypted journal: decrypt if unlocked, else { locked }
   }
+  if (isValidData(parsed)) {
+    encryptedOnDisk = false;
+    return { data: parsed };
+  }
+
+  // The file exists but cannot be read as journal data. Never overwrite it,
+  // set it aside and fall back to the newest readable backup.
+  const corruptPath = `${P.dataFile}.corrupt-${stamp()}`;
+  let setAside = true;
+  try {
+    await fsp.rename(P.dataFile, corruptPath);
+  } catch {
+    try { await fsp.copyFile(P.dataFile, corruptPath); } catch { setAside = false; }
+  }
+  const keptNote = setAside
+    ? `The unreadable file was kept, unchanged, at: ${corruptPath}`
+    : `The unreadable file could not be copied aside (it may be locked ` +
+      `by another program); it is still at ${P.dataFile} and will be ` +
+      `replaced the next time you save.`;
+  const backup = await newestValidBackup();
+  if (backup) {
+    const note =
+      `Your main journal file could not be read, so the most recent ` +
+      `backup (${backup.name}) was loaded instead. Nothing you save ` +
+      `from now on is affected. ${keptNote}`;
+    if (vaultCrypto.isVault(backup.parsed)) {
+      const opened = openVault(backup.parsed);
+      return { ...opened, warning: opened.warning ? `${note} ${opened.warning}` : note };
+    }
+    encryptedOnDisk = false;
+    return { data: backup.parsed, warning: note };
+  }
+  encryptedOnDisk = false;
+  return {
+    data: emptyData(), warning:
+      `Your journal file could not be read and no backup was found, so ` +
+      `Flint is starting empty. ${keptNote}`
+  };
 }
 
 async function newestValidBackup() {
@@ -165,9 +302,8 @@ async function newestValidBackup() {
     .reverse();
   for (const name of candidates) {
     try {
-      const raw = await fsp.readFile(path.join(P.backupsDir, name), 'utf8');
-      const parsed = JSON.parse(raw);
-      if (isValidData(parsed)) return { name, data: parsed };
+      const parsed = JSON.parse(await fsp.readFile(path.join(P.backupsDir, name), 'utf8'));
+      if (isValidData(parsed) || vaultCrypto.isVault(parsed)) return { name, parsed };
     } catch {
       // Skip unreadable backups and keep looking.
     }
@@ -185,7 +321,14 @@ async function newestValidBackup() {
 let saveChain = Promise.resolve();
 
 function saveData(data) {
-  const run = saveChain.then(() => doSaveData(data));
+  return runExclusive(() => doSaveData(data));
+}
+
+// Runs work after any in-flight save (or earlier exclusive op) has finished,
+// so writes to entries.json never interleave. Used for saves and for the
+// encryption operations, which also rewrite entries.json.
+function runExclusive(fn) {
+  const run = saveChain.then(fn, fn);
   saveChain = run.catch(() => {});
   return run;
 }
@@ -194,7 +337,40 @@ async function doSaveData(data) {
   if (!isValidData(data)) {
     throw new Error('Flint was asked to save something that does not look like journal data. Nothing was written.');
   }
-  const json = JSON.stringify(data, null, 2);
+
+  let json;
+  if (encryptedOnDisk) {
+    // The journal is encrypted. We must hold the data key to re-seal it;
+    // refuse rather than ever write the words to disk in the clear.
+    if (!sessionDk || !sessionVault) {
+      throw new Error(
+        'Your journal is locked, so this change was not saved. Unlock it ' +
+        'with your PIN (or recovery code) and try again.'
+      );
+    }
+    sessionVault = vaultCrypto.resealBody(sessionVault, sessionDk, data);
+    json = JSON.stringify(sessionVault, null, 2);
+  } else {
+    // About to write plaintext. Check the disk first: if it holds a vault, our
+    // in-memory state has drifted (a locked file, a stale flag) and writing now
+    // would overwrite an encrypted journal in the clear. Refuse instead.
+    const s = await peekVaultState();
+    if (s.state === 'vault') {
+      encryptedOnDisk = true;
+      sessionVault = s.vault;
+      throw new Error(
+        'Your journal is encrypted, but Flint lost track of the key, so this change was NOT saved ' +
+        'and nothing on disk was touched. Close and reopen Flint, unlock it, and your words are safe.'
+      );
+    }
+    if (s.state === 'unknown') {
+      throw new Error(
+        `Your journal file could not be checked (${s.error}), so nothing was written. ` +
+        'Your words are still on the page. Please try saving again.'
+      );
+    }
+    json = JSON.stringify(data, null, 2);
+  }
   JSON.parse(json); // sanity check: never write unparseable text
 
   try {
@@ -202,7 +378,7 @@ async function doSaveData(data) {
   } catch (err) {
     throw new Error(
       `Your words could NOT be saved to disk (${err.code || err.message}). ` +
-      `They are still in the app — please try saving again. ` +
+      `They are still in the app, so please try saving again. ` +
       `File: ${P.dataFile}`
     );
   }
@@ -217,6 +393,14 @@ async function doSaveData(data) {
         `(${err.code || err.message}). Backups folder: ${P.backupsDir}`
     };
   }
+}
+
+// Writes the given bytes as the main file and, best effort, one backup. Used by
+// the encryption operations (enable, disable, change PIN) which each replace
+// entries.json wholesale.
+async function writeMainAndBackup(json) {
+  await writeFileAtomic(P.dataFile, json);
+  try { await writeBackup(json); } catch { /* main is written; backup is best effort */ }
 }
 
 async function writeBackup(json) {
@@ -260,9 +444,7 @@ function normaliseQuestions(list) {
     }
     usedKeys.add(key);
     cleaned.push({
-      key,
-      title: q.title.trim().slice(0, MAX_TITLE),
-      hint: (typeof q.hint === 'string' ? q.hint.trim() : '').slice(0, MAX_HINT)
+      key, title: q.title.trim().slice(0, MAX_TITLE), hint: (typeof q.hint === 'string' ? q.hint.trim() : '').slice(0, MAX_HINT)
     });
   }
   return cleaned.length ? cleaned : null;
@@ -305,18 +487,132 @@ async function saveQuestions(list) {
   return cleaned;
 }
 
+// ---------------------------------------------------------------- templates
+
+function normaliseTemplates(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  for (const t of list.slice(0, 30)) {
+    if (!t || typeof t.name !== 'string' || !t.name.trim()) continue;
+    out.push({
+      name: t.name.trim().slice(0, 80),
+      body: typeof t.body === 'string' ? t.body.slice(0, 4000) : ''
+    });
+  }
+  return out.length ? out : null;
+}
+
+async function loadTemplates() {
+  const s = await loadSettings();
+  return normaliseTemplates(s.templates) || DEFAULT_TEMPLATES.map((t) => ({ ...t }));
+}
+
+async function saveTemplates(list) {
+  const cleaned = normaliseTemplates(list);
+  if (!cleaned) throw new Error('You need at least one template with a name.');
+  const s = await loadSettings();
+  s.templates = cleaned;
+  await saveSettings(s);
+  return cleaned;
+}
+
 // -------------------------------------------------------------------- theme
+
+// Theme preference is one of 'light', 'dark' or 'system' (follow the OS). The
+// renderer resolves 'system' to light or dark at display time.
+function normaliseTheme(t) {
+  return t === 'dark' || t === 'system' ? t : 'light';
+}
 
 async function getTheme() {
   const s = await loadSettings();
-  return s.theme === 'dark' ? 'dark' : 'light';
+  return normaliseTheme(s.theme);
 }
 
 async function setTheme(theme) {
   const s = await loadSettings();
-  s.theme = theme === 'dark' ? 'dark' : 'light';
+  s.theme = normaliseTheme(theme);
   await saveSettings(s);
   return s.theme;
+}
+
+// An optional local nudge to write, off by default. The time is 24 hour HH:MM.
+// This is an OS notification raised on this computer; nothing leaves it.
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+async function getReminder() {
+  const s = await loadSettings();
+  const r = s.reminder && typeof s.reminder === 'object' ? s.reminder : {};
+  return { enabled: r.enabled === true, time: TIME_PATTERN.test(r.time) ? r.time : '20:00' };
+}
+
+async function setReminder(next) {
+  const s = await loadSettings();
+  const time = next && TIME_PATTERN.test(next.time) ? next.time : '20:00';
+  s.reminder = { enabled: Boolean(next && next.enabled), time };
+  await saveSettings(s);
+  return s.reminder;
+}
+
+// Weekdays (0 = Sunday) the user does not plan to write on. A day off never
+// breaks a streak; it is skipped rather than counted.
+async function getDaysOff() {
+  const s = await loadSettings();
+  return Array.isArray(s.streakDaysOff)
+    ? s.streakDaysOff.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
+    : [];
+}
+
+async function setDaysOff(list) {
+  const s = await loadSettings();
+  const clean = Array.isArray(list)
+    ? [...new Set(list.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort()
+    : [];
+  s.streakDaysOff = clean;
+  await saveSettings(s);
+  return clean;
+}
+
+// Minutes of inactivity before an encrypted journal re-locks itself. 0 is off.
+// Only ever acts when encryption is on; a plaintext journal has no lock.
+const AUTOLOCK_CHOICES = [0, 1, 5, 15, 30, 60];
+
+async function getAutoLockMinutes() {
+  const s = await loadSettings();
+  return AUTOLOCK_CHOICES.includes(s.autoLockMinutes) ? s.autoLockMinutes : 15;
+}
+
+async function setAutoLockMinutes(n) {
+  const s = await loadSettings();
+  s.autoLockMinutes = AUTOLOCK_CHOICES.includes(Number(n)) ? Number(n) : 15;
+  await saveSettings(s);
+  return s.autoLockMinutes;
+}
+
+// Whether the one-time first-run onboarding has been completed.
+async function getOnboarded() {
+  const s = await loadSettings();
+  return s.onboarded === true;
+}
+
+async function setOnboarded(done) {
+  const s = await loadSettings();
+  s.onboarded = Boolean(done);
+  await saveSettings(s);
+  return s.onboarded;
+}
+
+// Whether the optional guided prompts are shown under each day. Off by default.
+async function getGuided() {
+  const s = await loadSettings();
+  return s.guided === true;
+}
+
+async function setGuided(on) {
+  const s = await loadSettings();
+  s.guided = Boolean(on);
+  await saveSettings(s);
+  return s.guided;
 }
 
 // ------------------------------------------------------------- update opt
@@ -336,6 +632,119 @@ async function setUpdateChecks(on) {
   return s.updateChecks;
 }
 
+// ------------------------------------------------------ scheduled backups
+//
+// A copy of the journal file dropped into a folder the user picks (a USB stick,
+// a synced folder), so losing this machine does not take the record with it.
+// The file is copied exactly as it sits on disk, so an encrypted journal stays
+// encrypted in the backup. Copies go in a "Flint backups" subfolder and only
+// files we wrote there are ever pruned.
+
+const BACKUP_KEEP_DEFAULT = 10;
+const BACKUP_SUBFOLDER = 'Flint backups';
+// Only the exact grammar this build writes, so pruning can never reach a file
+// somebody else put there that merely looks similar.
+const BACKUP_PATTERN = /^flint-backup-\d{8}-\d{6}-\d{3}\.json$/;
+
+// A backup destination is only ever set from a folder picker in the main
+// process, never from a path handed over IPC. A UNC path (\\host\share) would
+// make Node's fs copy the journal over the network, which would walk straight
+// past the filter that is supposed to keep this app offline.
+function isSafeBackupFolder(folder) {
+  if (typeof folder !== 'string' || !folder.trim()) return false;
+  if (folder.startsWith('\\\\') || folder.startsWith('//')) return false;
+  const resolved = path.resolve(folder);
+  if (resolved.startsWith('\\\\') || resolved.startsWith('//')) return false;
+  if (!path.isAbsolute(resolved)) return false;
+  const root = path.parse(resolved).root;
+  return /^[A-Za-z]:[\\/]$/.test(root) || root === '/';
+}
+
+async function getBackupSettings() {
+  const s = await loadSettings();
+  const b = s.autoBackup && typeof s.autoBackup === 'object' ? s.autoBackup : {};
+  const folder = isSafeBackupFolder(b.folder) ? b.folder : '';
+  return {
+    enabled: b.enabled === true && Boolean(folder),
+    folder,
+    keep: Number.isInteger(b.keep) && b.keep > 0 && b.keep <= 100 ? b.keep : BACKUP_KEEP_DEFAULT,
+    lastRun: typeof b.lastRun === 'string' ? b.lastRun : ''
+  };
+}
+
+// Only 'enabled' is settable from the UI. The folder deliberately is not: see
+// isSafeBackupFolder. Retention is fixed rather than caller-supplied so nothing
+// can ask for "keep 1" and sweep away the real backups.
+async function setBackupSettings(next) {
+  const s = await loadSettings();
+  const cur = s.autoBackup && typeof s.autoBackup === 'object' ? s.autoBackup : {};
+  const folder = isSafeBackupFolder(cur.folder) ? cur.folder : '';
+  s.autoBackup = {
+    enabled: Boolean(next && next.enabled) && Boolean(folder),
+    folder,
+    keep: BACKUP_KEEP_DEFAULT,
+    lastRun: cur.lastRun || ''
+  };
+  await saveSettings(s);
+  return getBackupSettings();
+}
+
+// Called only from the main process, with a path that came from a folder picker.
+async function setBackupFolder(folder) {
+  if (!isSafeBackupFolder(folder)) {
+    return { ok: false, error: 'That folder cannot be used. Pick a folder on a drive on this computer.' };
+  }
+  const s = await loadSettings();
+  const cur = s.autoBackup && typeof s.autoBackup === 'object' ? s.autoBackup : {};
+  s.autoBackup = { enabled: true, folder, keep: BACKUP_KEEP_DEFAULT, lastRun: cur.lastRun || '' };
+  await saveSettings(s);
+  return { ok: true, backup: await getBackupSettings() };
+}
+
+// Photos are separate files, so copying entries.json alone would restore every
+// word and lose every picture. Attachment ids never change, so only what is not
+// already there gets copied. They are copied exactly as stored, which means an
+// encrypted journal's photos stay encrypted in the backup too.
+async function backupMedia(destRoot) {
+  let names;
+  try { names = await fsp.readdir(P.mediaDir); } catch { return 0; }
+  const ids = names.filter(isSafeMediaId);
+  if (!ids.length) return 0;
+  const dest = path.join(destRoot, 'media');
+  await fsp.mkdir(dest, { recursive: true });
+  let copied = 0;
+  for (const id of ids) {
+    const to = path.join(dest, id);
+    try { await fsp.access(to); continue; } catch { /* not copied yet */ }
+    try { await fsp.copyFile(mediaPath(id), to); copied++; } catch { /* skip this one */ }
+  }
+  return copied;
+}
+
+function runScheduledBackup() {
+  // Serialised with saves: copying the file while it is being replaced would
+  // otherwise capture a half-written moment.
+  return runExclusive(async () => {
+    const cfg = await getBackupSettings();
+    if (!cfg.enabled || !cfg.folder) return { ok: false, error: 'Scheduled backups are off.' };
+    if (!isSafeBackupFolder(cfg.folder)) return { ok: false, error: 'The saved backup folder is not usable. Choose it again.' };
+    if (!fs.existsSync(P.dataFile)) return { ok: false, error: 'There is nothing to back up yet.' };
+    const dir = path.join(cfg.folder, BACKUP_SUBFOLDER);
+    await fsp.mkdir(dir, { recursive: true });
+    const dest = path.join(dir, `flint-backup-${stamp()}.json`);
+    await fsp.copyFile(P.dataFile, dest);
+    const photos = await backupMedia(dir);
+
+    const names = (await fsp.readdir(dir)).filter((n) => BACKUP_PATTERN.test(n)).sort().reverse();
+    for (const old of names.slice(cfg.keep)) await fsp.unlink(path.join(dir, old)).catch(() => {});
+
+    const s = await loadSettings();
+    s.autoBackup = { ...(s.autoBackup || {}), lastRun: new Date().toISOString() };
+    await saveSettings(s);
+    return { ok: true, path: dest, photos };
+  });
+}
+
 // ----------------------------------------------------------------- export
 //
 // Shared shaping used by both the plain-text and the PDF/HTML exports, so the
@@ -343,10 +752,7 @@ async function setUpdateChecks(on) {
 
 function longDate(d) {
   return d.toLocaleDateString('en-GB', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
   });
 }
 
@@ -364,8 +770,24 @@ function entryTags(entry) {
   return entry && Array.isArray(entry.__tags) ? entry.__tags.filter((t) => typeof t === 'string' && t.trim()) : [];
 }
 
-// The filled-in answers for one day, in prompt order, followed by any answers
-// whose prompt has since been removed (labelled from knownTitles).
+// Exports are text, so photos are noted by count rather than embedded. A day
+// holding only a photo still counts as written, and still exports.
+function entryMediaCount(entry) {
+  return entry && Array.isArray(entry.__media) ? entry.__media.filter((m) => m && typeof m.id === 'string').length : 0;
+}
+function photosLine(entry) {
+  const n = entryMediaCount(entry);
+  return n ? `${n} ${n === 1 ? 'photo' : 'photos'}` : '';
+}
+
+// The day's main free-form note (the diary body). `note` is the primary field.
+function entryNote(entry) {
+  return entry && typeof entry.note === 'string' ? entry.note.trim() : '';
+}
+
+// The filled-in optional guided-prompt answers, in prompt order, followed by any
+// answers whose prompt has since been removed (labelled from knownTitles). The
+// free-form `note` is handled separately (it is the main body, not a prompt).
 function orderedAnswers(entry, questions, titles) {
   const out = [];
   const qkeys = new Set(questions.map((q) => q.key));
@@ -374,7 +796,7 @@ function orderedAnswers(entry, questions, titles) {
     if (typeof v === 'string' && v.trim()) out.push({ title: q.title, text: v.trim() });
   }
   for (const k of Object.keys(entry)) {
-    if (isReservedKey(k) || qkeys.has(k)) continue;
+    if (k === 'note' || isReservedKey(k) || qkeys.has(k)) continue;
     const v = entry[k];
     if (typeof v === 'string' && v.trim()) {
       out.push({ title: (titles && titles[k]) || 'Note', text: v.trim() });
@@ -385,8 +807,10 @@ function orderedAnswers(entry, questions, titles) {
 
 function entryHasContent(entry, questions, titles) {
   return (
+    Boolean(entryNote(entry)) ||
     Boolean(dayMarkerLabel(entry)) ||
     entryTags(entry).length > 0 ||
+    entryMediaCount(entry) > 0 ||
     orderedAnswers(entry, questions, titles).length > 0
   );
 }
@@ -405,36 +829,89 @@ function buildExportText(data, opts = {}) {
   const now = opts.now || new Date();
   const dates = contentDates(data, questions, titles);
 
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const lines = [];
-  lines.push('Flint export');
-  lines.push(
-    `Created: ${longDate(now)}, ` +
-    now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-  );
-  lines.push(`Days recorded: ${dates.length}`);
-  lines.push('');
+  lines.push('FLINT JOURNAL');
+  lines.push('=============');
+  lines.push(`Exported ${longDate(now)} at ${time}`);
+  lines.push(`${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded`);
 
   for (const date of dates) {
     const entry = data.entries[date];
     const heading = longDateFromISO(date);
-    const bar = '='.repeat(Math.max(heading.length, 20));
-    lines.push(bar);
+    lines.push('');
+    lines.push('');
     lines.push(heading);
-    lines.push(bar);
+    lines.push('-'.repeat(heading.length));
     const marker = dayMarkerLabel(entry);
     if (marker) lines.push(`Overall: ${marker}`);
     const tags = entryTags(entry);
     if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
-    lines.push('');
+    const photos = photosLine(entry);
+    if (photos) lines.push(`Photos: ${photos} (kept in your data folder)`);
+    const note = entryNote(entry);
+    if (note) { lines.push(''); lines.push(note); }
+    // Guided-prompt answers, each under an indented title so they read clearly.
     for (const sec of orderedAnswers(entry, questions, titles)) {
-      lines.push(sec.title);
-      lines.push('-'.repeat(sec.title.length));
-      lines.push(sec.text);
       lines.push('');
+      lines.push(`  ${sec.title}`);
+      for (const ln of sec.text.split('\n')) lines.push(`    ${ln}`);
     }
   }
 
+  lines.push('');
   return lines.join('\r\n');
+}
+
+// The same timeline as Markdown, so the journal can be read or reused anywhere
+// (Obsidian, a plain editor) without Flint. Uses \n, as Markdown tools expect.
+function buildExportMarkdown(data, opts = {}) {
+  const questions = opts.questions || DEFAULT_QUESTIONS;
+  const titles = opts.knownTitles || {};
+  const now = opts.now || new Date();
+  const dates = contentDates(data, questions, titles);
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const out = [];
+  out.push('# Flint journal');
+  out.push('');
+  out.push(`Exported ${longDate(now)} at ${time}. ${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded.`);
+
+  for (const date of dates) {
+    const entry = data.entries[date];
+    out.push('', '---', '');
+    out.push(`## ${longDateFromISO(date)}`);
+    const marker = dayMarkerLabel(entry);
+    const tags = entryTags(entry);
+    const photos = photosLine(entry);
+    if (marker || tags.length || photos) {
+      out.push('');
+      if (marker) out.push(`**Overall:** ${marker}`);
+      if (tags.length) out.push(`**Tags:** ${tags.join(', ')}`);
+      if (photos) out.push(`**Photos:** ${photos} (kept in your data folder)`);
+    }
+    const note = entryNote(entry);
+    if (note) { out.push(''); out.push(note); }
+    for (const sec of orderedAnswers(entry, questions, titles)) {
+      out.push('', `### ${sec.title}`, '', sec.text);
+    }
+  }
+  out.push('');
+  return out.join('\n');
+}
+
+// Merges an imported journal into the current one. Days we do not already have
+// are added; days we do have are left exactly as they are. An import can only
+// ever add to the record, never quietly rewrite a day that is already written.
+function mergeImported(current, incoming) {
+  let added = 0, skipped = 0;
+  const out = { version: 1, entries: { ...current.entries } };
+  for (const [date, entry] of Object.entries((incoming && incoming.entries) || {})) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    if (Object.prototype.hasOwnProperty.call(out.entries, date)) { skipped++; continue; }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) { out.entries[date] = entry; added++; }
+  }
+  return { data: out, added, skipped };
 }
 
 function escapeHtml(s) {
@@ -453,57 +930,75 @@ function buildExportHtml(data, opts = {}) {
   const now = opts.now || new Date();
   const dates = contentDates(data, questions, titles);
 
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const parts = [];
-  parts.push('<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8"><style>');
+  // This document is built from the user's own words and rendered in a real
+  // browser window to make the PDF, so it gets a CSP of its own: no scripts, no
+  // network, nothing but the text and the styles below.
+  parts.push('<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8">');
+  parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">');
+  parts.push('<style>');
   parts.push(`
     * { box-sizing: border-box; }
-    body { font-family: Georgia, "Times New Roman", serif; color: #2c2822;
-           line-height: 1.6; margin: 0; padding: 0; }
-    .doc-head { margin: 0 0 1.5rem; }
-    h1 { font-size: 22pt; margin: 0 0 0.2rem; }
-    .meta { color: #5c5346; font-size: 11pt; margin: 0; }
-    .day { margin: 0 0 1.4rem; page-break-inside: avoid; }
-    h2 { font-size: 15pt; margin: 0 0 0.15rem; border-bottom: 2px solid #c9bda3;
-         padding-bottom: 0.2rem; }
-    .day-meta { color: #5c5346; font-size: 10.5pt; margin: 0.1rem 0 0.5rem; }
-    h3 { font-size: 12pt; margin: 0.7rem 0 0.1rem; color: #4a4236; }
-    p.answer { margin: 0.1rem 0 0; white-space: pre-wrap; font-size: 11.5pt; }
+    body { font-family: Georgia, "Times New Roman", serif; color: #2b2721;
+           line-height: 1.65; margin: 0; padding: 0; }
+    .doc-head { border-bottom: 3px solid #c9772f; padding-bottom: 0.55rem; margin: 0 0 1.8rem; }
+    h1 { font-size: 24pt; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+    .meta { color: #6a6154; font-size: 10.5pt; margin: 0; }
+    .day { margin: 0 0 1.6rem; page-break-inside: avoid; }
+    h2 { font-size: 15pt; margin: 0 0 0.35rem; color: #23201b; }
+    .day-meta { margin: 0 0 0.7rem; }
+    .badge { display: inline-block; font-size: 9.5pt; padding: 0.12rem 0.6rem; border-radius: 999px;
+             background: #f0e6d6; color: #6a5a3d; margin: 0 0.35rem 0.25rem 0; }
+    .note { white-space: pre-wrap; font-size: 12pt; margin: 0 0 0.6rem; }
+    .prompt { margin: 0.75rem 0 0; }
+    .prompt-title { font-size: 10pt; font-weight: bold; color: #9a6a2f;
+                    text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.1rem; }
+    .prompt-answer { white-space: pre-wrap; font-size: 11.5pt; margin: 0; }
+    hr.day-rule { border: 0; border-top: 1px solid #e2d7c4; margin: 0 0 1.6rem; }
   `);
   parts.push('</style></head><body>');
   parts.push('<div class="doc-head">');
-  parts.push('<h1>Flint</h1>');
+  parts.push('<h1>Flint journal</h1>');
   parts.push(
-    `<p class="meta">Created ${escapeHtml(longDate(now))}, ` +
-    `${escapeHtml(now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))} · ` +
-    `${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded</p>`
+    `<p class="meta">Exported ${escapeHtml(longDate(now))} at ${escapeHtml(time)} ` +
+    `&nbsp;&middot;&nbsp; ${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded</p>`
   );
   parts.push('</div>');
 
-  for (const date of dates) {
+  dates.forEach((date, i) => {
     const entry = data.entries[date];
     parts.push('<section class="day">');
     parts.push(`<h2>${escapeHtml(longDateFromISO(date))}</h2>`);
-    const bits = [];
+    const badges = [];
     const marker = dayMarkerLabel(entry);
-    if (marker) bits.push(escapeHtml(marker));
-    const tags = entryTags(entry);
-    if (tags.length) bits.push('Tags: ' + escapeHtml(tags.join(', ')));
-    if (bits.length) parts.push(`<p class="day-meta">${bits.join(' &nbsp;·&nbsp; ')}</p>`);
+    if (marker) badges.push(`<span class="badge">${escapeHtml(marker)}</span>`);
+    for (const t of entryTags(entry)) badges.push(`<span class="badge">${escapeHtml(t)}</span>`);
+    const photos = photosLine(entry);
+    if (photos) badges.push(`<span class="badge">${escapeHtml(photos)}</span>`);
+    if (badges.length) parts.push(`<div class="day-meta">${badges.join('')}</div>`);
+    const note = entryNote(entry);
+    if (note) parts.push(`<p class="note">${escapeHtml(note)}</p>`);
     for (const sec of orderedAnswers(entry, questions, titles)) {
-      parts.push(`<h3>${escapeHtml(sec.title)}</h3>`);
-      parts.push(`<p class="answer">${escapeHtml(sec.text)}</p>`);
+      parts.push('<div class="prompt">');
+      parts.push(`<p class="prompt-title">${escapeHtml(sec.title)}</p>`);
+      parts.push(`<p class="prompt-answer">${escapeHtml(sec.text)}</p>`);
+      parts.push('</div>');
     }
     parts.push('</section>');
-  }
+    if (i < dates.length - 1) parts.push('<hr class="day-rule">');
+  });
 
   parts.push('</body></html>');
   return parts.join('');
 }
 
-// -------------------------------------------------------------------- PIN
+// ----------------------------------------------------------- window PIN
 //
-// The PIN only gates the app window. Entries stay readable on disk, so a
-// forgotten PIN is recovered by deleting settings.json — never by losing data.
+// This is the LEGACY lock: it only gates the app window, entries stay readable
+// on disk, so a forgotten window PIN is recovered by deleting settings.json.
+// Turning on encryption (below) supersedes it and clears it. It is kept so
+// existing installs that set a window PIN keep working.
 
 async function loadSettings() {
   try {
@@ -549,25 +1044,386 @@ async function removePin() {
   await saveSettings(s);
 }
 
+// ------------------------------------------------------------- encryption
+//
+// Real at-rest encryption (see crypto.js). When it is on, entries.json is a
+// vault and the data key lives only in memory while unlocked. The PIN unlocks
+// it day to day; the recovery code (shown once) is the fallback for a forgotten
+// PIN. Losing both is unrecoverable by design, which is what makes it real.
+
+// Looks at entries.json WITHOUT deciding anything it cannot actually tell.
+// Returns one of:
+//   { state: 'vault', vault }  the file is an encrypted vault
+//   { state: 'plain' }         the file exists and is not a vault
+//   { state: 'absent' }        there is no file yet
+//   { state: 'unknown' }       it could not be read (locked by antivirus, a
+//                              sync client, permissions, a bad disk)
+//
+// The distinction between 'plain' and 'unknown' is the whole point. Treating an
+// unreadable file as "not encrypted" is how an encrypted journal gets silently
+// overwritten in the clear, so callers must never downgrade on 'unknown'.
+async function peekVaultState() {
+  let raw;
+  try {
+    raw = await fsp.readFile(P.dataFile, 'utf8');
+  } catch (err) {
+    return { state: err.code === 'ENOENT' ? 'absent' : 'unknown', error: err.code || err.message };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return vaultCrypto.isVault(parsed) ? { state: 'vault', vault: parsed } : { state: 'plain' };
+  } catch {
+    return { state: 'plain' }; // readable but not JSON: loadData quarantines it
+  }
+}
+
+// Convenience for the paths that only care about an actually-present vault.
+// Throws on 'unknown' so no caller can mistake a read failure for plaintext.
+async function requireVaultState() {
+  const s = await peekVaultState();
+  if (s.state === 'unknown') throw new Error(`Your journal file could not be read (${s.error}). Nothing was changed.`);
+  return s;
+}
+
+// Whether the journal is encrypted, and if so whether this session holds the
+// key. Reads the disk so it is correct even before the first loadData().
+async function securityStatus() {
+  const s = await peekVaultState();
+  if (s.state === 'vault') {
+    encryptedOnDisk = true;
+    sessionVault = s.vault;
+    // If the file changed underneath us, the key we hold may no longer belong to
+    // it. Resealing a body under a key the wraps do not match would leave a
+    // journal nobody could ever open, so drop the key and ask for the PIN again.
+    if (sessionDk) {
+      try { vaultCrypto.openWithDk(s.vault, sessionDk); }
+      catch { clearSessionDk(); }
+    }
+  } else if (s.state === 'plain' || s.state === 'absent') {
+    encryptedOnDisk = false;
+    sessionVault = null;
+    clearSessionDk();
+  }
+  // 'unknown' deliberately changes nothing: we could not read the file, so we
+  // still believe whatever we last knew. Downgrading here would drop the key and
+  // let the next save write the journal out in the clear.
+  const windowPin = await pinIsSet();
+  return {
+    ok: true,
+    encrypted: encryptedOnDisk,
+    unlocked: encryptedOnDisk ? Boolean(sessionDk) : true,
+    windowPin: !encryptedOnDisk && windowPin,
+    unreadable: s.state === 'unknown'
+  };
+}
+
+// Unlock the vault with the PIN. On success the key is held for this session.
+async function unlock(pin) {
+  let s;
+  try { s = await requireVaultState(); }
+  catch (err) { return { ok: false, error: err.message }; }
+  if (s.state !== 'vault') { encryptedOnDisk = false; return { ok: true }; } // nothing to unlock
+  const opened = await openVaultWith(s.vault, () => vaultCrypto.openWithPin(s.vault, pin), 'PIN');
+  if (!opened.ok) return opened;
+  await upgradeWrapCost(pin);
+  return { ok: true };
+}
+
+// Shared by the PIN and recovery paths. Splits "your secret is wrong" from "the
+// file is damaged": if the wrap opens but the body will not decrypt, the secret
+// was RIGHT and the journal is corrupt. Saying "wrong PIN" there is how someone
+// burns their recovery code and concludes the journal is gone, when a backup
+// would have restored it.
+async function openVaultWith(vault, opener, secretName) {
+  let dk, data;
+  try {
+    ({ dk, data } = await opener());
+  } catch (err) {
+    if (err && err.code === 'FLINT_DAMAGED') {
+      return { ok: false, damaged: true, error: `Your ${secretName} is correct, but the journal file is damaged, so it could not be opened. A backup can be restored from your data folder.` };
+    }
+    return { ok: false, error: `That ${secretName} did not work.` };
+  }
+  void data;
+  setSessionDk(dk);
+  sessionVault = vault;
+  encryptedOnDisk = true;
+  return { ok: true };
+}
+
+// If the PIN wrap was written at an older, cheaper cost, rewrite it at the
+// current cost now that we hold the PIN. Best effort: a failure here must never
+// block an unlock, since the existing wrap still works.
+async function upgradeWrapCost(pin) {
+  try {
+    if (!sessionVault || !sessionDk || !vaultCrypto.isStaleWrap(sessionVault.pin)) return;
+    await runExclusive(async () => {
+      const next = await vaultCrypto.rewrapPin(sessionVault, sessionDk, pin);
+      await writeMainAndBackup(JSON.stringify(next, null, 2));
+      sessionVault = next;
+    });
+  } catch { /* keep the session; the old wrap is still valid */ }
+}
+
+// Unlock the vault with the recovery code (the forgotten-PIN path).
+async function unlockWithRecovery(code) {
+  let s;
+  try { s = await requireVaultState(); }
+  catch (err) { return { ok: false, error: err.message }; }
+  if (s.state !== 'vault') { encryptedOnDisk = false; return { ok: true }; }
+  return openVaultWith(s.vault, () => vaultCrypto.openWithRecovery(s.vault, code), 'recovery code');
+}
+
+// Wipe the key from memory. Disk stays encrypted; the app should show its gate.
+function lock() {
+  clearSessionDk();
+  return { ok: true };
+}
+
+// Removes any backup files that are plaintext journals, leaving encrypted ones.
+// Called when encryption is switched on so old cleartext copies do not linger.
+// Returns how many plaintext copies it could NOT remove, so enabling encryption
+// can say so plainly instead of claiming success while readable journals remain.
+// Anything it cannot prove is a vault is treated as plaintext and removed: a
+// half-written or truncated copy still holds the words.
+async function purgePlaintextIn(dir, pattern) {
+  let left = 0;
+  let names;
+  try { names = await fsp.readdir(dir); } catch { return left; }
+  for (const name of names) {
+    // .tmp leftovers from an interrupted write hold the full plaintext journal
+    // and match no normal pattern, so nothing else would ever clear them.
+    const isTmp = name.endsWith('.tmp');
+    if (!pattern.test(name) && !isTmp) continue;
+    const full = path.join(dir, name);
+    try {
+      if (!isTmp) {
+        const parsed = JSON.parse(await fsp.readFile(full, 'utf8'));
+        if (vaultCrypto.isVault(parsed)) continue; // already encrypted, keep it
+      }
+      await fsp.unlink(full);
+    } catch {
+      left++;
+    }
+  }
+  return left;
+}
+
+async function purgePlaintextBackups() {
+  return purgePlaintextIn(P.backupsDir, /^entries-.*\.json$/);
+}
+
+// Copies already sitting in the user's chosen backup folder are the same leak,
+// and worse if that folder syncs to a cloud. If the folder is not reachable we
+// say so rather than pretend it was handled.
+async function purgeExternalPlaintextBackups() {
+  const cfg = await getBackupSettings();
+  if (!cfg.folder || !isSafeBackupFolder(cfg.folder)) return { reachable: false, left: 0 };
+  const dir = path.join(cfg.folder, BACKUP_SUBFOLDER);
+  try { await fsp.access(dir); } catch { return { reachable: false, left: 0 }; }
+  return { reachable: true, left: await purgePlaintextIn(dir, BACKUP_PATTERN) };
+}
+
+// Turn encryption on for a currently-plaintext journal. Returns the one-time
+// recovery code, which the UI must show the user once and never store.
+function enableEncryption(pin) {
+  return runExclusive(async () => {
+    const pre = await requireVaultState();
+    if (pre.state === 'vault') return { ok: false, error: 'Your journal is already encrypted.' };
+    if (typeof pin !== 'string' || pin.length < 4) {
+      return { ok: false, error: 'Choose a PIN of at least 4 characters.' };
+    }
+    const loaded = await loadData();
+    const data = loaded.data && isValidData(loaded.data) ? loaded.data : emptyData();
+    const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, pin);
+    await writeMainAndBackup(JSON.stringify(vault, null, 2));
+    setSessionDk(dk);
+    sessionVault = vault;
+    encryptedOnDisk = true;
+
+    // Everything past this point is tidying, and the vault is already committed.
+    // If any of it throws, the recovery code would be lost forever while the
+    // journal stayed encrypted, so nothing here is allowed to be fatal.
+    const leftovers = [];
+    try {
+      const failed = await rewriteMediaEncryption(dk, true);
+      if (failed.length) leftovers.push(`${failed.length} ${failed.length === 1 ? 'photo is' : 'photos are'} still unencrypted`);
+    } catch { leftovers.push('photos could not all be encrypted'); }
+    try {
+      const left = await purgePlaintextBackups();
+      if (left) leftovers.push(`${left} readable backup ${left === 1 ? 'copy' : 'copies'} could not be removed`);
+    } catch { leftovers.push('old readable backups could not be removed'); }
+    try {
+      const ext = await purgeExternalPlaintextBackups();
+      if (ext.left) leftovers.push(`${ext.left} readable ${ext.left === 1 ? 'copy' : 'copies'} could not be removed from your backup folder`);
+    } catch { leftovers.push('your backup folder could not be cleaned'); }
+    try { await removePin(); } catch { /* the encryption PIN supersedes it anyway */ }
+
+    return { ok: true, recoveryCode, leftovers };
+  });
+}
+
+// Turn encryption off, writing the journal back as plaintext. Requires the PIN.
+function disableEncryption(pin) {
+  return runExclusive(async () => {
+    const s = await requireVaultState();
+    if (s.state !== 'vault') { encryptedOnDisk = false; clearSessionDk(); sessionVault = null; return { ok: true }; }
+    let data, dk;
+    try {
+      ({ data, dk } = await vaultCrypto.openWithPin(s.vault, pin));
+    } catch (err) {
+      if (err && err.code === 'FLINT_DAMAGED') {
+        return { ok: false, error: 'Your PIN is correct, but the journal file is damaged, so encryption was left on.' };
+      }
+      return { ok: false, error: 'That PIN did not work, so encryption was left on.' };
+    }
+    // Photos FIRST, and only continue if every one of them came back. Clearing
+    // the key while an attachment is still encrypted would strand it forever:
+    // the vault (and its wraps) would be gone, so nothing could re-derive it.
+    const failed = await rewriteMediaEncryption(dk, false);
+    if (failed.length) {
+      return {
+        ok: false,
+        error: `Encryption was left ON because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be unlocked just now (they may be open in another program). Nothing was changed. Please try again.`
+      };
+    }
+    await writeMainAndBackup(JSON.stringify(data, null, 2));
+    clearSessionDk();
+    sessionVault = null;
+    encryptedOnDisk = false;
+    return { ok: true };
+  });
+}
+
+// Re-encrypt every attachment from one data key to another.
+async function rekeyMedia(oldDk, newDk) {
+  const failed = [];
+  let names;
+  try { names = await fsp.readdir(P.mediaDir); } catch { return failed; }
+  for (const name of names.filter((n) => n.endsWith('.tmp'))) {
+    await fsp.unlink(path.join(P.mediaDir, name)).catch(() => {});
+  }
+  for (const name of names.filter(isSafeMediaId)) {
+    try {
+      const file = mediaPath(name);
+      const blob = await fsp.readFile(file);
+      const raw = isEncryptedBlob(blob) ? vaultCrypto.decryptBuffer(oldDk, blob.subarray(MEDIA_MAGIC.length)) : blob;
+      await writeFileAtomicRaw(file, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(newDk, raw)]));
+    } catch {
+      failed.push(name);
+    }
+  }
+  return failed;
+}
+
+// Move the rolling backups onto the new key as well. A backup that still holds
+// the OLD wraps is exactly what makes changing a PIN meaningless, so any copy we
+// cannot move over is deleted rather than left answering to the old secret.
+// Returns how many were removed, so the user can be told plainly.
+async function rekeyBackups(oldDk, newDk, newVault) {
+  let removed = 0;
+  let names;
+  try { names = await fsp.readdir(P.backupsDir); } catch { return removed; }
+  for (const name of names.filter((n) => /^entries-.*\.json/.test(n))) {
+    const file = path.join(P.backupsDir, name);
+    try {
+      const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+      if (!vaultCrypto.isVault(parsed)) { await fsp.unlink(file).catch(() => {}); removed++; continue; }
+      let body;
+      try { body = vaultCrypto.openWithDk(parsed, oldDk); }
+      catch { await fsp.unlink(file).catch(() => {}); removed++; continue; }
+      const moved = vaultCrypto.resealBody(newVault, newDk, body);
+      await writeFileAtomicRaw(file, Buffer.from(JSON.stringify(moved, null, 2), 'utf8'));
+    } catch {
+      await fsp.unlink(file).catch(() => {}); removed++;
+    }
+  }
+  return removed;
+}
+
+// Mints a brand new data key, moves the journal, the photos and the backups onto
+// it, and wraps it under the new PIN and a fresh recovery code. This is what
+// makes "change my PIN" true: afterwards the old PIN and the old recovery code
+// open nothing that still exists.
+async function rotateToNewKey(data, oldDk, newPin) {
+  const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, newPin);
+  const failed = await rekeyMedia(oldDk, dk);
+  if (failed.length) {
+    return {
+      ok: false,
+      error: `Nothing was changed, because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be re-locked just now (they may be open in another program). Please try again.`
+    };
+  }
+  await writeMainAndBackup(JSON.stringify(vault, null, 2));
+  const removed = await rekeyBackups(oldDk, dk, vault);
+  setSessionDk(dk);
+  sessionVault = vault;
+  encryptedOnDisk = true;
+  return { ok: true, recoveryCode, removedBackups: removed };
+}
+
+// Change the PIN. This rotates the data key, so a NEW recovery code is issued.
+function changeEncryptionPin(currentPin, newPin) {
+  return runExclusive(async () => {
+    const s = await requireVaultState();
+    if (s.state !== 'vault') return { ok: false, error: 'Your journal is not encrypted.' };
+    if (typeof newPin !== 'string' || newPin.length < 4) {
+      return { ok: false, error: 'Choose a new PIN of at least 4 characters.' };
+    }
+    let data, dk;
+    try {
+      ({ data, dk } = await vaultCrypto.openWithPin(s.vault, currentPin));
+    } catch (err) {
+      if (err && err.code === 'FLINT_DAMAGED') {
+        return { ok: false, error: 'Your current PIN is correct, but the journal file is damaged, so the PIN was not changed.' };
+      }
+      return { ok: false, error: 'Your current PIN did not work.' };
+    }
+    return rotateToNewKey(data, dk, newPin);
+  });
+}
+
+// Called after someone gets in with their recovery code. They do not know their
+// PIN (that is why they used the code), so they must choose a new one, and that
+// rotation is what genuinely retires BOTH the forgotten PIN and the spent code:
+// afterwards neither opens anything that still exists. Returns a fresh code.
+function resetSecretsAfterRecovery(newPin) {
+  return runExclusive(async () => {
+    const s = await requireVaultState();
+    if (s.state !== 'vault') return { ok: false, error: 'Your journal is not encrypted.' };
+    if (!sessionDk) return { ok: false, error: 'Unlock the journal first.' };
+    if (typeof newPin !== 'string' || newPin.length < 4) {
+      return { ok: false, error: 'Choose a PIN of at least 4 characters.' };
+    }
+    // Reading the body with the key we hold also proves the key and the file on
+    // disk still belong together, so a fresh code can never be wrapped around a
+    // key that does not open this journal.
+    let data;
+    try { data = vaultCrypto.openWithDk(s.vault, sessionDk); }
+    catch { return { ok: false, error: 'Flint could not read your journal with the key it holds. Unlock again and try that once more.' }; }
+    return rotateToNewKey(data, sessionDk, newPin);
+  });
+}
+
+// Verify a PIN without unlocking or changing session state. Unwraps the key only
+// and wipes it straight away: a yes/no check must never pull the whole journal
+// into memory, least of all while the app is meant to be locked.
+async function checkEncryptionPin(pin) {
+  let s;
+  try { s = await requireVaultState(); }
+  catch (err) { return { ok: false, valid: false, error: err.message }; }
+  if (s.state !== 'vault') return { ok: true, encrypted: false, valid: true };
+  try {
+    const dk = await vaultCrypto.unwrapWithPin(s.vault, String(pin));
+    dk.fill(0);
+    return { ok: true, encrypted: true, valid: true };
+  } catch {
+    return { ok: true, encrypted: true, valid: false };
+  }
+}
+
 module.exports = {
-  init,
-  paths,
-  emptyData,
-  loadData,
-  saveData,
-  loadQuestions,
-  saveQuestions,
-  knownTitles,
-  getTheme,
-  setTheme,
-  getUpdateChecks,
-  setUpdateChecks,
-  buildExportText,
-  buildExportHtml,
-  pinIsSet,
-  setPin,
-  verifyPin,
-  removePin,
-  BACKUPS_TO_KEEP,
-  DEFAULT_QUESTIONS
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, addMedia, getMedia, removeMedia, getTheme, setTheme, getOnboarded, setOnboarded, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin,
+  BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

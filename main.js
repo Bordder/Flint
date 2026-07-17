@@ -1,14 +1,7 @@
 'use strict';
 
 const {
-  app,
-  BrowserWindow,
-  Menu,
-  ipcMain,
-  dialog,
-  session,
-  shell,
-  clipboard
+  app, BrowserWindow, Menu, ipcMain, dialog, session, shell, clipboard, Notification
 } = require('electron');
 const path = require('path');
 const url = require('url');
@@ -16,7 +9,7 @@ const fs = require('fs');
 const store = require('./store');
 
 // Auto-update lives ENTIRELY in the main process and uses its own Node HTTPS
-// client — it is the one and only thing Flint does over the internet. The
+// client, it is the one and only thing Flint does over the internet. The
 // journal window (renderer) stays fully air-gapped by lockDownNetwork(), so
 // the part of the app that touches your notes can never make a network call.
 // The updater only ever DOWNLOADS (a version manifest + installer) from the
@@ -28,40 +21,24 @@ try {
   autoUpdater = null; // not installed / dev: updates simply unavailable
 }
 
-// One stable folder for everything, identical whether the app runs from
-// source (`npm start`) or from the installed copy:
-//   %APPDATA%\Flint            (Chromium's own working files)
-//   %APPDATA%\Flint\data       (the journal itself — entries, backups, PIN)
+// Dev vs installed. When run from source (`npm start` / the Testing launcher)
+// app.isPackaged is false, this is the TESTING build. It uses a completely
+// separate data folder so it can never read or write the real journal:
+//   installed:  %APPDATA%\Flint\data
+//   testing:    %APPDATA%\Flint-Dev\data
+// In dev it also live-reloads the window whenever a renderer file changes.
+const isDev = !app.isPackaged;
 const appDataBase = app.getPath('appData');
-const dataRoot = path.join(appDataBase, 'Flint');
+const dataRoot = path.join(appDataBase, isDev ? 'Flint-Dev' : 'Flint');
 
-// The app used to be called "Journal". If this computer has data from that
-// name but no Flint data yet, bring it across so nothing is lost. Best-effort
-// and one-time: the old folder is copied (not moved), so it also stays as a
-// safety copy. Everything else about the app is unchanged.
-migrateFromOldName(appDataBase);
 app.setPath('userData', dataRoot);
 const paths = store.init(dataRoot);
-
-function migrateFromOldName(base) {
-  try {
-    const oldData = path.join(base, 'Journal', 'data');
-    const newData = path.join(base, 'Flint', 'data');
-    if (fs.existsSync(newData)) return; // Flint already has data — never overwrite it
-    if (!fs.existsSync(oldData)) return; // nothing from the old name to bring over
-    fs.mkdirSync(dataRoot, { recursive: true });
-    fs.cpSync(oldData, newData, { recursive: true });
-  } catch {
-    // If the copy fails, the app still starts (just without the old entries
-    // auto-imported); the old folder remains untouched for a manual copy.
-  }
-}
 
 let win = null;
 let allowClose = false;
 let closing = false;
 
-// Only one copy of the app may run — two windows writing one file is how
+// Only one copy of the app may run, two windows writing one file is how
 // journals get corrupted.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -75,10 +52,71 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     lockDownNetwork();
-    buildMenu();
+    // No native "File Edit View Help" menu bar, the app has its own in-window
+    // top bar. Standard editing shortcuts (Ctrl+C/V/X/Z/A) still work inside the
+    // text fields, and Ctrl+S to save is handled in the renderer.
+    Menu.setApplicationMenu(null);
     createWindow();
     setupUpdates();
+    setInterval(checkReminder, 60 * 1000);
+    setTimeout(maybeBackup, 10 * 1000);
+    setInterval(maybeBackup, 6 * 60 * 60 * 1000);
   });
+}
+
+// Runs the scheduled backup at most once a day, quietly. Like the reminder, a
+// backup is a safety net and must never take the app down with it.
+async function maybeBackup() {
+  try {
+    const cfg = await store.getBackupSettings();
+    if (!cfg.enabled) return;
+    if (cfg.lastRun) {
+      const since = Date.now() - new Date(cfg.lastRun).getTime();
+      if (Number.isFinite(since) && since < 24 * 60 * 60 * 1000) return;
+    }
+    await store.runScheduledBackup();
+  } catch { /* a failed backup must not disturb the writing */ }
+}
+
+// ------------------------------------------------------------- reminder
+//
+// A local nudge to write, raised as an OS notification on this computer. It is
+// off unless the user turns it on, fires at most once a day, only within the
+// hour after the chosen time (so a late launch does not nag), and is skipped if
+// today is already written. A reminder is a nicety, so nothing here may throw.
+
+let reminderFiredOn = null;
+
+async function todayAlreadyWritten() {
+  try {
+    const res = await store.loadData();
+    if (!res.data) return false; // locked: we cannot tell, so a nudge is fair
+    const entry = res.data.entries[todayISO()];
+    if (!entry) return false;
+    return Object.keys(entry).some((k) => k !== 'updatedAt' && String(entry[k] || '').trim());
+  } catch {
+    return false;
+  }
+}
+
+async function checkReminder() {
+  try {
+    if (!Notification.isSupported()) return;
+    const { enabled, time } = await store.getReminder();
+    if (!enabled) return;
+    const today = todayISO();
+    if (reminderFiredOn === today) return;
+    const now = new Date();
+    const [h, m] = time.split(':').map(Number);
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const target = h * 60 + m;
+    if (nowMin < target || nowMin > target + 60) return;
+    reminderFiredOn = today;
+    if (await todayAlreadyWritten()) return;
+    const notif = new Notification({ title: 'Flint', body: 'A quiet moment to write today?' });
+    notif.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
+    notif.show();
+  } catch { /* never let a reminder break the app */ }
 }
 
 // ------------------------------------------------------------- auto-update
@@ -133,7 +171,7 @@ async function runUpdateCheck(manual) {
 // The journal is offline by design. Belt and braces: even if some future
 // dependency tried to make a request, every non-local URL is cancelled and
 // every permission the page could ask for is refused. file: URLs are only
-// allowed from the app's own folder — a file://host/share URL would be a
+// allowed from the app's own folder, a file://host/share URL would be a
 // network SMB fetch on Windows, so a blanket file: allowance is not enough.
 const appBaseUrl = (url.pathToFileURL(path.join(__dirname, path.sep)).href).toLowerCase();
 
@@ -145,27 +183,29 @@ function isLocalAppUrl(u) {
   return low.startsWith(appBaseUrl);
 }
 
-function lockDownNetwork() {
-  const ses = session.defaultSession;
+function sealSession(ses) {
   ses.webRequest.onBeforeRequest((details, callback) => {
     callback(isLocalAppUrl(details.url) ? {} : { cancel: true });
   });
   ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  // The request handler only covers permissions that are ASKED for; a synchronous
+  // check would otherwise fall through to Electron's defaults.
+  ses.setPermissionCheckHandler(() => false);
+  ses.setDevicePermissionHandler(() => false);
+}
+
+// Both windows we create use the default session, so sealing it seals every
+// page. This deliberately does NOT seal every session that gets created: the
+// updater runs on its own session in the main process, and cancelling its
+// requests would quietly break updates.
+function lockDownNetwork() {
+  sealSession(session.defaultSession);
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 880,
-    height: 940,
-    minWidth: 380,
-    minHeight: 520,
-    backgroundColor: '#f7f2e9',
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      spellcheck: false // Electron's spellchecker downloads dictionaries; keep everything offline
+    width: 880, height: 940, minWidth: 380, minHeight: 520, backgroundColor: '#f7f2e9', show: false, webPreferences: {
+      preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false // Electron's spellchecker downloads dictionaries; keep everything offline
     }
   });
 
@@ -175,10 +215,29 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
 
+  if (isDev) {
+    // Mark the window so the testing build is never mistaken for the real one,
+    // and reload it whenever a renderer file changes, so it always shows the
+    // latest edits without a manual rebuild. Renderer-only; main.js changes
+    // still need a relaunch. Dev-only: never runs in the installed app.
+    win.on('page-title-updated', (e) => { e.preventDefault(); win.setTitle('Flint (Testing)'); });
+    let reloadTimer = null;
+    for (const dir of [path.join(__dirname, 'renderer'), path.join(__dirname, 'shared')]) {
+      try {
+        fs.watch(dir, { recursive: true }, () => {
+          clearTimeout(reloadTimer);
+          reloadTimer = setTimeout(() => {
+            if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache();
+          }, 150);
+        });
+      } catch { /* watching is a convenience; ignore if unavailable */ }
+    }
+  }
+
   // Never let the window close over unsaved words without asking. The
   // renderer is asked for its live dirty state at close time (a pushed flag
   // could be stale for words typed in the final instant); no answer within
-  // the timeout is treated as dirty — the safe direction.
+  // the timeout is treated as dirty, the safe direction.
   win.on('close', (e) => {
     if (allowClose) return;
     e.preventDefault();
@@ -193,12 +252,7 @@ function createWindow() {
           return;
         }
         const { response } = await dialog.showMessageBox(win, {
-          type: 'question',
-          message: 'You have unsaved words on the page.',
-          buttons: ['Save and close', 'Close without saving', 'Keep writing'],
-          defaultId: 0,
-          cancelId: 2,
-          noLink: true
+          type: 'question', message: 'You have unsaved words on the page.', buttons: ['Save and close', 'Close without saving', 'Keep writing'], defaultId: 0, cancelId: 2, noLink: true
         });
         closing = false;
         if (response === 0) {
@@ -238,96 +292,14 @@ function askRendererDirty() {
   });
 }
 
-function buildMenu() {
-  const template = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Save this day',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => win && win.webContents.send('menu', 'save')
-        },
-        { type: 'separator' },
-        {
-          label: 'Export to text file…',
-          click: () => win && win.webContents.send('menu', 'export')
-        },
-        {
-          label: 'Export to PDF…',
-          click: () => win && win.webContents.send('menu', 'export-pdf')
-        },
-        { type: 'separator' },
-        { role: 'quit', label: 'Quit Flint' }
-      ]
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' }
-      ]
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'zoomIn', label: 'Larger text' },
-        { role: 'zoomOut', label: 'Smaller text' },
-        { role: 'resetZoom', label: 'Normal text size' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'Where is my data?',
-          click: () => shell.openPath(paths.dataDir)
-        },
-        {
-          label: 'About Flint',
-          click: () => {
-            dialog.showMessageBox(win, {
-              type: 'info',
-              message: `Flint ${app.getVersion()}`,
-              detail:
-                'A private daily journal.\n\n' +
-                `Your words are stored only on this computer, at:\n${paths.dataFile}\n\n` +
-                `Backups of your last ${store.BACKUPS_TO_KEEP} saves are kept in:\n${paths.backupsDir}\n\n` +
-                'Your notes never leave this computer. The only thing Flint does ' +
-                'online is check for a new version — it downloads updates but never ' +
-                'sends your entries anywhere. You can switch that off in Settings.',
-              buttons: ['Close'],
-              noLink: true
-            });
-          }
-        }
-      ]
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
 // ------------------------------------------------------------------- IPC
 
 ipcMain.handle('journal:load', async () => {
   try {
-    const { data, warning } = await store.loadData();
+    const res = await store.loadData();
     return {
-      ok: true,
-      data,
-      warning: warning || null,
-      paths: {
-        dataDir: paths.dataDir,
-        dataFile: paths.dataFile,
-        backupsDir: paths.backupsDir,
-        settingsFile: paths.settingsFile
+      ok: true, locked: Boolean(res.locked), data: res.data || null, warning: res.warning || null, paths: {
+        dataDir: paths.dataDir, dataFile: paths.dataFile, backupsDir: paths.backupsDir, settingsFile: paths.settingsFile
       }
     };
   } catch (err) {
@@ -347,9 +319,7 @@ ipcMain.handle('journal:save', async (_e, data) => {
 function todayISO() {
   const d = new Date();
   return [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')
+    d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')
   ].join('-');
 }
 
@@ -364,9 +334,7 @@ ipcMain.handle('journal:export-file', async () => {
     const { data, questions, knownTitles } = await exportContext();
     const text = store.buildExportText(data, { questions, knownTitles });
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Save journal as a text file',
-      defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.txt`),
-      filters: [{ name: 'Text file', extensions: ['txt'] }]
+      title: 'Save journal as a text file', defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.txt`), filters: [{ name: 'Text file', extensions: ['txt'] }]
     });
     if (canceled || !filePath) return { ok: true, canceled: true };
     const fs = require('fs').promises;
@@ -377,14 +345,65 @@ ipcMain.handle('journal:export-file', async () => {
   }
 });
 
+ipcMain.handle('journal:export-markdown', async () => {
+  try {
+    const { data, questions, knownTitles } = await exportContext();
+    const md = store.buildExportMarkdown(data, { questions, knownTitles });
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: 'Save journal as Markdown', defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.md`), filters: [{ name: 'Markdown file', extensions: ['md'] }]
+    });
+    if (canceled || !filePath) return { ok: true, canceled: true };
+    await require('fs').promises.writeFile(filePath, md, 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('journal:export-json', async () => {
+  try {
+    const { data } = await exportContext();
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: 'Save journal as JSON', defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.json`), filters: [{ name: 'JSON file', extensions: ['json'] }]
+    });
+    if (canceled || !filePath) return { ok: true, canceled: true };
+    await require('fs').promises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Import only ever adds days the journal does not already have, so a mistaken
+// import can never overwrite something already written.
+ipcMain.handle('journal:import-json', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: 'Import a Flint journal file', properties: ['openFile'], filters: [{ name: 'Flint journal (JSON)', extensions: ['json'] }]
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: true, canceled: true };
+    const raw = await require('fs').promises.readFile(filePaths[0], 'utf8');
+    let incoming = null;
+    try { incoming = JSON.parse(raw); } catch { return { ok: false, error: 'That file is not readable JSON.' }; }
+    if (!incoming || typeof incoming !== 'object' || !incoming.entries || typeof incoming.entries !== 'object' || Array.isArray(incoming.entries)) {
+      return { ok: false, error: 'That does not look like a Flint journal file.' };
+    }
+    const current = await store.loadData();
+    if (!current.data) return { ok: false, error: 'Your journal is locked, so nothing was imported.' };
+    const { data, added, skipped } = store.mergeImported(current.data, incoming);
+    if (added > 0) await store.saveData(data);
+    return { ok: true, added, skipped };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('journal:export-pdf', async () => {
   try {
     const { data, questions, knownTitles } = await exportContext();
     const html = store.buildExportHtml(data, { questions, knownTitles });
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Save journal as a PDF',
-      defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.pdf`),
-      filters: [{ name: 'PDF file', extensions: ['pdf'] }]
+      title: 'Save journal as a PDF', defaultPath: path.join(app.getPath('documents'), `flint-${todayISO()}.pdf`), filters: [{ name: 'PDF file', extensions: ['pdf'] }]
     });
     if (canceled || !filePath) return { ok: true, canceled: true };
     const pdf = await renderPdf(html);
@@ -399,15 +418,16 @@ ipcMain.handle('journal:export-pdf', async () => {
 // data: URL (allowed by the offline filter); nothing is fetched from anywhere.
 async function renderPdf(html) {
   const pdfWin = new BrowserWindow({
-    show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
+    show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
   });
+  // The same guards the main window has. This page is built from journal text,
+  // so it gets no way to open a window or navigate anywhere either.
+  pdfWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  pdfWin.webContents.on('will-navigate', (e) => e.preventDefault());
   try {
     await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     return await pdfWin.webContents.printToPDF({
-      printBackground: true,
-      pageSize: 'A4',
-      margins: { top: 0.6, bottom: 0.6, left: 0.6, right: 0.6 } // inches
+      printBackground: true, pageSize: 'A4', margins: { top: 0.6, bottom: 0.6, left: 0.6, right: 0.6 } // inches
     });
   } finally {
     pdfWin.destroy();
@@ -444,6 +464,44 @@ ipcMain.handle('questions:set', async (_e, list) => {
   }
 });
 
+ipcMain.handle('media:add', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: 'Attach an image', properties: ['openFile'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }]
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: true, canceled: true };
+    return await store.addMedia(filePaths[0]);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('media:get', async (_e, id) => {
+  try { return await store.getMedia(id); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('media:remove', async (_e, id) => {
+  try { return await store.removeMedia(id); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('templates:get', async () => {
+  try {
+    return { ok: true, templates: await store.loadTemplates() };
+  } catch (err) {
+    return { ok: false, templates: [], error: err.message };
+  }
+});
+
+ipcMain.handle('templates:set', async (_e, list) => {
+  try {
+    return { ok: true, templates: await store.saveTemplates(list) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('theme:get', async () => {
   try {
     return { ok: true, theme: await store.getTheme() };
@@ -460,15 +518,133 @@ ipcMain.handle('theme:set', async (_e, theme) => {
   }
 });
 
+ipcMain.handle('guided:get', async () => {
+  try {
+    return { ok: true, guided: await store.getGuided() };
+  } catch (err) {
+    return { ok: false, guided: false, error: err.message };
+  }
+});
+
+ipcMain.handle('guided:set', async (_e, on) => {
+  try {
+    return { ok: true, guided: await store.setGuided(on) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('backup:get', async () => {
+  try {
+    return { ok: true, backup: await store.getBackupSettings() };
+  } catch (err) {
+    return { ok: false, backup: { enabled: false, folder: '', keep: 10, lastRun: '' }, error: err.message };
+  }
+});
+
+ipcMain.handle('backup:set', async (_e, next) => {
+  try {
+    return { ok: true, backup: await store.setBackupSettings(next) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// The chosen folder is stored here, in main, and never round-tripped through
+// the renderer. A path from the page could be a UNC share, which would turn a
+// "local backup" into a copy of the journal sent over the network.
+ipcMain.handle('backup:choose-folder', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: 'Choose a folder for backups', properties: ['openDirectory', 'createDirectory']
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: true, canceled: true };
+    return await store.setBackupFolder(filePaths[0]);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('backup:run-now', async () => {
+  try {
+    return await store.runScheduledBackup();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('reminder:get', async () => {
+  try {
+    return { ok: true, reminder: await store.getReminder() };
+  } catch (err) {
+    return { ok: false, reminder: { enabled: false, time: '20:00' }, error: err.message };
+  }
+});
+
+ipcMain.handle('reminder:set', async (_e, next) => {
+  try {
+    reminderFiredOn = null; // a reminder just turned on may still fire today
+    return { ok: true, reminder: await store.setReminder(next) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('daysoff:get', async () => {
+  try {
+    return { ok: true, days: await store.getDaysOff() };
+  } catch (err) {
+    return { ok: false, days: [], error: err.message };
+  }
+});
+
+ipcMain.handle('daysoff:set', async (_e, list) => {
+  try {
+    return { ok: true, days: await store.setDaysOff(list) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('autolock:get', async () => {
+  try {
+    return { ok: true, minutes: await store.getAutoLockMinutes() };
+  } catch (err) {
+    return { ok: false, minutes: 15, error: err.message };
+  }
+});
+
+ipcMain.handle('autolock:set', async (_e, n) => {
+  try {
+    return { ok: true, minutes: await store.setAutoLockMinutes(n) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('onboarding:get', async () => {
+  try {
+    return { ok: true, onboarded: await store.getOnboarded() };
+  } catch (err) {
+    return { ok: false, onboarded: false, error: err.message };
+  }
+});
+
+ipcMain.handle('onboarding:done', async () => {
+  try {
+    await store.setOnboarded(true);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 const PIN_PATTERN = /^\d{4,10}$/;
 
 ipcMain.handle('pin:status', async () => {
   try {
     return {
-      ok: true,
-      set: await store.pinIsSet(),
-      dataDir: paths.dataDir,
-      settingsFile: paths.settingsFile
+      ok: true, set: await store.pinIsSet(), dataDir: paths.dataDir, settingsFile: paths.settingsFile
     };
   } catch (err) {
     return { ok: false, set: false, error: err.message };
@@ -506,15 +682,92 @@ ipcMain.handle('pin:remove', async (_e, pin) => {
   }
 });
 
+// ---------------------------------------------------------------- encryption
+//
+// Real at-rest encryption. The main process holds the data key in memory only
+// while unlocked; it never crosses to the renderer and is never written out.
+// The recovery code is returned to the renderer exactly once (on enable) so it
+// can be shown to the user, and is never stored anywhere by Flint.
+
+const ENC_PIN_MIN = 4;
+const ENC_PIN_MAX = 64;
+
+function validEncPin(pin) {
+  const s = String(pin);
+  return s.length >= ENC_PIN_MIN && s.length <= ENC_PIN_MAX;
+}
+
+// Each of these returns the store result directly (it already carries an `ok`
+// flag and, where relevant, an `error` string or the one-time `recoveryCode`).
+
+ipcMain.handle('security:status', async () => {
+  try {
+    const s = await store.securityStatus();
+    return { ok: true, ...s, dataDir: paths.dataDir };
+  } catch (err) {
+    return { ok: false, encrypted: false, unlocked: true, windowPin: false, error: err.message };
+  }
+});
+
+ipcMain.handle('security:unlock', async (_e, pin) => {
+  try { return await store.unlock(String(pin)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:unlock-recovery', async (_e, code) => {
+  try { return await store.unlockWithRecovery(String(code)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:lock', async () => {
+  try { return store.lock(); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:enable', async (_e, pin) => {
+  if (!validEncPin(pin)) return { ok: false, error: `Choose a PIN of ${ENC_PIN_MIN} to ${ENC_PIN_MAX} characters.` };
+  try { return await store.enableEncryption(String(pin)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:disable', async (_e, pin) => {
+  try { return await store.disableEncryption(String(pin)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:change-pin', async (_e, currentPin, newPin) => {
+  if (!validEncPin(newPin)) return { ok: false, error: `Choose a new PIN of ${ENC_PIN_MIN} to ${ENC_PIN_MAX} characters.` };
+  try { return await store.changeEncryptionPin(String(currentPin), String(newPin)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// After a recovery-code unlock the user picks a new PIN, and that rotation is
+// what actually retires the forgotten PIN and the spent code.
+ipcMain.handle('security:reset-after-recovery', async (_e, newPin) => {
+  if (!validEncPin(newPin)) return { ok: false, error: `Choose a PIN of ${ENC_PIN_MIN} to ${ENC_PIN_MAX} characters.` };
+  try { return await store.resetSecretsAfterRecovery(String(newPin)); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('security:check-pin', async (_e, pin) => {
+  try { return await store.checkEncryptionPin(String(pin)); }
+  catch (err) { return { ok: false, valid: false, error: err.message }; }
+});
+
+// Copy a short string (the one-time recovery code) to the clipboard on request.
+// It is already in the renderer; this just reaches the OS clipboard from main.
+ipcMain.handle('app:copy-text', async (_e, text) => {
+  clipboard.writeText(String(text == null ? '' : text));
+  return { ok: true };
+});
+
 ipcMain.handle('app:open-data-folder', async () => {
   await shell.openPath(paths.dataDir);
   return { ok: true };
 });
 
 ipcMain.handle('app:version', async () => ({
-  ok: true,
-  version: app.getVersion(),
-  supported: Boolean(autoUpdater) && app.isPackaged
+  ok: true, version: app.getVersion(), supported: Boolean(autoUpdater) && app.isPackaged
 }));
 
 ipcMain.handle('update:check', async () => {

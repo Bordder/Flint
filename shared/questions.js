@@ -10,48 +10,24 @@
 
 const DEFAULT_QUESTIONS = [
   {
-    key: 'food',
-    title: 'Food and cooking',
-    hint: 'How did preparing or cooking food go today? Anything you could not face, needed help with, or did differently?'
-  },
-  {
-    key: 'eating',
-    title: 'Eating and drinking',
-    hint: 'How was eating and drinking today? Appetite, managing meals, anything you skipped or found hard.'
-  },
-  {
-    key: 'washing',
-    title: 'Washing and getting ready',
-    hint: 'Washing, bathing, dressing, looking after yourself — how did it go today?'
-  },
-  {
-    key: 'people',
-    title: 'Being around people',
-    hint: 'Any time with other people today — in person, on the phone, online. How did it feel?'
-  },
-  {
-    key: 'out',
-    title: 'Going out',
-    hint: 'Did you go out, or plan to? How did journeys and places — familiar or new — go today?'
-  },
-  {
-    key: 'walking',
-    title: 'Walking and standing',
-    hint: 'Walking, standing and moving about, indoors or outside. Distances, rests, aids, pain.'
-  },
-  {
-    key: 'other',
-    title: 'Anything else',
-    hint: 'Anything else about today you want to keep — sleep, pain, mood, good moments, hard moments.'
+    key: 'highlight', title: 'A good moment', hint: 'Something that went well, made you smile, or that you want to remember from today.'
+  }, {
+    key: 'challenge', title: 'Something hard', hint: 'A challenge, a worry, or anything that weighed on you. Naming it can help.'
+  }, {
+    key: 'grateful', title: 'Grateful for', hint: 'One or two things, big or small, that you felt thankful for today.'
+  }, {
+    key: 'mind', title: 'On your mind', hint: 'Whatever you are turning over right now, sorted or not.'
+  }, {
+    key: 'learned', title: 'Something you learned', hint: 'A lesson, an idea, or something you noticed about yourself or the world.'
+  }, {
+    key: 'ahead', title: 'Looking ahead', hint: 'What is next, what you are hoping for, or one small thing for tomorrow.'
   }
 ];
 
-// The optional "How was today?" marker. Deliberately just three calm choices —
-// no numbers, no scores. Kept here so the app and the export agree on wording.
+// The optional "How was today?" marker. Deliberately just three calm choices,
+// with no numbers and no scores. Kept so the app and the export agree on wording.
 const DAY_MARKERS = [
-  { key: 'good', label: 'Good day', short: 'Good' },
-  { key: 'mixed', label: 'Mixed day', short: 'Mixed' },
-  { key: 'hard', label: 'Hard day', short: 'Hard' }
+  { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Hard day', short: 'Hard' }
 ];
 
 if (typeof module !== 'undefined' && module.exports) {
