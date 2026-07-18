@@ -177,7 +177,7 @@ function promptCapture() {
     const modal = document.createElement('div'); modal.className = 'modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
     const h = document.createElement('h2'); h.textContent = 'Quick note into today';
     const b = document.createElement('p'); b.className = 'modal-body';
-    b.textContent = 'This is added to the end of today, with the time in front of it. Ctrl and Enter saves.';
+    b.textContent = 'This is added to the end of today, with the time in front of it. Press Enter to add it (Shift and Enter for a new line).';
     const ta = document.createElement('textarea'); ta.className = 'modal-capture'; ta.rows = 4;
     ta.setAttribute('aria-label', 'What is on your mind');
     const row = document.createElement('div'); row.className = 'btn-row';
@@ -195,7 +195,7 @@ function promptCapture() {
     row.append(cancel, ok);
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); close(null); }
-      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); close(ta.value); }
+      else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (ta.value.trim()) close(ta.value); }
     }
     document.addEventListener('keydown', onKey, true);
     ta.focus();
@@ -801,12 +801,12 @@ function renderCount() {
 // Streak milestones. The flame changes colour as the run grows, hotter (orange
 // to blue) at each tier, covering a full month before the top tier.
 const STREAK_TIERS = [
-  { min: 1, name: 'Spark', color: 'oklch(70% 0.19 47)' },
-  { min: 3, name: 'Kindling', color: 'oklch(78% 0.16 72)' },
-  { min: 7, name: 'Steady flame', color: 'oklch(83% 0.15 95)' },
-  { min: 14, name: 'Roaring fire', color: 'oklch(66% 0.2 30)' },
-  { min: 21, name: 'Blue flame', color: 'oklch(72% 0.14 235)' },
-  { min: 30, name: 'Everburning', color: 'oklch(60% 0.19 272)' }
+  { min: 1, name: 'day one', color: 'oklch(70% 0.19 47)' },
+  { min: 3, name: '3 days', color: 'oklch(78% 0.16 72)' },
+  { min: 7, name: 'one week', color: 'oklch(83% 0.15 95)' },
+  { min: 14, name: 'two weeks', color: 'oklch(66% 0.2 30)' },
+  { min: 21, name: 'three weeks', color: 'oklch(72% 0.14 235)' },
+  { min: 30, name: 'one month', color: 'oklch(60% 0.19 272)' }
 ];
 function currentTier(count) {
   let t = null;
@@ -907,9 +907,12 @@ function renderStreakPop() {
   const headText = document.createElement('div');
   const title = document.createElement('p'); title.className = 'streak-pop-title';
   title.textContent = count === 0 ? 'No streak yet' : `${count}-day streak`;
-  const tierName = document.createElement('p'); tierName.className = 'streak-pop-tier';
-  tierName.textContent = tier ? tier.name : 'Write today to light the first flame';
-  headText.append(title, tierName);
+  headText.append(title);
+  if (count === 0) {
+    const hint = document.createElement('p'); hint.className = 'streak-pop-tier';
+    hint.textContent = 'Write today to start your streak';
+    headText.append(hint);
+  }
   head.append(flame, headText);
   pop.append(head);
 
@@ -1772,8 +1775,8 @@ function buildAutoLockControl() {
 }
 
 function buildDisableForm() {
-  const details = document.createElement('details'); details.className = 'sec-disable';
-  const summary = document.createElement('summary'); summary.className = 'linklike'; summary.textContent = 'Turn off encryption';
+  const wrap = document.createElement('div'); wrap.className = 'sec-disable';
+  const head = document.createElement('p'); head.className = 'sec-disable-head'; head.textContent = 'Turn off encryption';
   const p = document.createElement('p'); p.className = 'soft small'; p.textContent = 'This writes your entries back as readable files on this computer. Only do it if you no longer need them protected.';
   const form = document.createElement('form'); form.className = 'sec-form';
   const cur = secField('Enter your PIN to confirm', 'enc-off-pin');
@@ -1788,8 +1791,8 @@ function buildDisableForm() {
     if (res.ok) renderSecuritySettings('Encryption is off. Your entries are readable files again.');
     else { msg.textContent = res.error || 'Encryption could not be turned off.'; msg.classList.add('error'); cur.input.value = ''; cur.input.focus(); }
   });
-  details.append(summary, p, form);
-  return details;
+  wrap.append(head, p, form);
+  return wrap;
 }
 
 // Legacy: only appears if an older install still has a window-only PIN set.

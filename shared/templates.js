@@ -12,7 +12,7 @@ const DEFAULT_TEMPLATES = [
   }, {
     name: 'Decision log', body: 'The decision:\n\n\nWhy I chose it:\n\n\nWhat I expect to happen:\n\n\nWorth revisiting on:\n'
   }, {
-    name: 'Brain dump', body: 'Everything on my mind, unsorted:\n\n'
+    name: 'Brain dump', body: 'Everything on my mind\n\n'
   }
 ];
 
