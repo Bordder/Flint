@@ -8,46 +8,33 @@ sections 7–8.
 
 ---
 
-## 1. How to build and package it
+## 1. Build it yourself (optional)
 
-You only need to do this when you want to (re)create the installer.
+Most people just download the installer from the releases page and skip this.
+But because Flint is unsigned (see section 2), you never have to trust that
+download: the whole source is here, and you can build the exact same app from it.
 
-**One-time setup:** install Node.js from https://nodejs.org (the "LTS"
-version, default options). That's the only tool required.
+**One-time setup:** install Node.js from https://nodejs.org (the "LTS" version,
+default options). That is the only tool needed.
 
 Then, in this project folder:
 
-1. Open the folder in File Explorer.
-2. Click the address bar, type `cmd`, press Enter (a black window opens here).
-3. Type these two commands, pressing Enter after each. The first fetches the
-   build tools (needs internet, the *built app* itself never does), the
-   second builds the installer. Each can take a few minutes:
+1. Click the File Explorer address bar, type `cmd`, press Enter (a black window
+   opens here).
+2. Type these two commands, pressing Enter after each. The first fetches the
+   build tools (needs internet, the *built app* itself never does), the second
+   builds the installer. Each can take a few minutes:
 
    ```
    npm install
    npm run dist
    ```
 
-4. When it finishes, the installer is at:
+3. When it finishes, the installer is at:
 
    ```
    dist\Flint-Setup-1.2.0.exe
    ```
-
-(Optional: `npm test` runs the saving/backup self-checks. `npm start` runs
-the app directly without installing.)
-
-**A note for whoever builds this next.** The `electronFuses` block in
-`package.json` hardens the built `Flint.exe` so it cannot be misused as a
-general-purpose Node interpreter (`ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`,
-`--inspect`) and will only load the app from a verified `app.asar`. One fuse is
-deliberately **left alone**: `grantFileProtocolExtraPrivileges`. Flint's own
-window is a `file://` page loaded out of `app.asar`, and turning that fuse off
-stops the page loading at all, so the app opens as a blank window. What it would
-have guarded against (a `file://` page reaching other `file://` resources) is
-already covered by the page's Content-Security-Policy and by `lockDownNetwork`
-in `main.js`, which cancels every request that is not one of the app's own files.
-If you ever build and get a blank window, that fuse is the first thing to check.
 
 ## 2. How to install it
 
@@ -78,7 +65,7 @@ Two things follow from that:
 
 - It comes back on **every new version**. Reputation is tied to the exact file,
   so an unsigned app starts from zero each release. (A signed app builds trust
-  that carries across releases, which is the only real fix, see section 8.)
+  that carries across releases, which is the only real fix.)
 - Some Windows 11 machines run **Smart App Control**, which is stricter and can
   refuse unsigned apps outright with no "Run anyway" option. If that happens,
   build Flint yourself instead (section 1).
@@ -205,7 +192,7 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
 - **A nudge when the page is blank.** Open a day you have not written on yet and
   Flint can offer a gentle prompt to start from. Ask for another, drop it into
   your writing, or wave it away. The prompts are always optional and never
-  time-limited, and on a day you mark Hard they lean to the kinder ones.
+  time-limited, and on a day you mark Bad they lean to the kinder ones.
 - **A quiet welcome back.** If it has been a while, or a new week has begun,
   Flint opens with a calm, dismissible line, never a guilt trip, and it never
   counts what you missed.
@@ -215,9 +202,7 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
   and, if you want, helps you set a PIN there and then.
 - **Automatic update checks** (optional, see section 8).
 
-The starting prompts and the day-marker wording live in one file,
-`shared/questions.js`, if you'd rather change the built-in defaults in code and
-rebuild, but you never need to: everything above is editable inside the app.
+Everything above is editable inside the app. You never need to open a file.
 
 ## 7. Privacy and the internet
 
@@ -250,43 +235,10 @@ in Settings → Updates, or press "Check now" any time). If one exists, a calm b
 appears offering **Download**, then **Install and restart**, nothing downloads
 or installs without your click, and if you're offline it simply does nothing.
 
-For this to find anything, each new version has to be **published** to a GitHub
-release. The app is already configured to look at **`Bordder/Flint`** (set in
-`package.json` under `build` → `publish`). One-time setup: create that **public**
-repo at https://github.com if it doesn't exist yet.
-
-Then, to release a new version:
-
-1. Bump `"version"` in `package.json` (e.g. `1.1.0` → `1.1.1`).
-2. Run `npm run dist`.
-3. Go to `https://github.com/Bordder/Flint/releases/new`, set the tag to `v`
-   plus that version (e.g. `v1.1.1`), and **drag these three files** from your
-   `dist\` folder onto the release, then Publish:
-   - `Flint-Setup-1.1.1.exe`
-   - `Flint-Setup-1.1.1.exe.blockmap`
-   - `latest.yml`
-4. Paste the installer's checksum into the release notes, so anyone downloading
-   it can confirm they got the file you actually built (see "Checking it
-   yourself" in section 2). Get it with:
-
-   ```
-   certutil -hashfile dist\Flint-Setup-1.1.1.exe SHA256
-   ```
-
-The filenames have no spaces on purpose, so GitHub keeps them exactly as-is and
-the update check matches them. Every installed copy will offer that update the
-next time it opens.
-
-**Faster alternative (uploads everything for you):** create a GitHub
-"personal access token" with `repo` permission, then run:
-
-```
-set GH_TOKEN=your_token_here
-npm run publish
-```
-
-That builds and uploads all three files in one go. Keep the token private, never commit it or share it. (If you'd rather not use GitHub at all, the same
-works from any web host; ask and I'll switch the config to a plain URL.)
+Each update is an ordinary download from the project's GitHub releases page. Like
+any download it reveals your computer's IP address to GitHub, but never a word of
+your journal (see section 7). Turn the checks off in Settings → Updates and Flint
+never reaches out for them again.
 
 ---
 
