@@ -595,11 +595,28 @@ async function getOnboarded() {
   return s.onboarded === true;
 }
 
+// A plain local YYYY-MM-DD, for day-level bookkeeping the writer would recognise
+// as "today" (unlike the UTC backup stamp, which is about file ordering).
+function localDay(d = new Date()) {
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+}
+
 async function setOnboarded(done) {
   const s = await loadSettings();
   s.onboarded = Boolean(done);
+  // Stamp the first day so the gentle first-week touch knows when to ease off.
+  // Only ever set once, and never for an install that finished onboarding before
+  // this existed (those are long past their first week anyway).
+  if (s.onboarded && !s.startedOn) s.startedOn = localDay();
   await saveSettings(s);
   return s.onboarded;
+}
+
+// The first-run date, stamped once at onboarding, so the renderer can show a
+// gentle "just settling in" note during the opening week and nothing after.
+async function getStartedOn() {
+  const s = await loadSettings();
+  return { startedOn: /^\d{4}-\d{2}-\d{2}$/.test(s.startedOn) ? s.startedOn : '' };
 }
 
 // Whether the optional guided prompts are shown under each day. Off by default.
@@ -1422,8 +1439,30 @@ async function checkEncryptionPin(pin) {
   }
 }
 
+// ------------------------------------------------------------- start over
+//
+// Wipe everything Flint owns and return to a brand-new state: no entries, no
+// backups, no photos, no settings, no PIN. Runs serialised with saves so it can
+// never race a write. The caller reloads the window afterwards, which then runs
+// first-time onboarding again. There is no undo, which is why the UI confirms
+// twice before it ever gets here.
+function resetAll() {
+  return runExclusive(async () => {
+    clearSessionDk();
+    sessionVault = null;
+    encryptedOnDisk = false;
+    try {
+      await fsp.rm(P.dataDir, { recursive: true, force: true });
+    } catch (err) {
+      return { ok: false, error: `Some files could not be removed (${err.code || err.message}). Close anything using your data folder and try again.` };
+    }
+    await fsp.mkdir(P.backupsDir, { recursive: true });
+    return { ok: true };
+  });
+}
+
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, addMedia, getMedia, removeMedia, getTheme, setTheme, getOnboarded, setOnboarded, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, mergeImported, pinIsSet, setPin, verifyPin, removePin,
-  securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, addMedia, getMedia, removeMedia, getTheme, setTheme, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

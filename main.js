@@ -6,6 +6,7 @@ const {
 const path = require('path');
 const url = require('url');
 const fs = require('fs');
+const https = require('https');
 const store = require('./store');
 
 // Auto-update lives ENTIRELY in the main process and uses its own Node HTTPS
@@ -464,28 +465,6 @@ ipcMain.handle('questions:set', async (_e, list) => {
   }
 });
 
-ipcMain.handle('media:add', async () => {
-  try {
-    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Attach an image', properties: ['openFile'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }]
-    });
-    if (canceled || !filePaths || !filePaths[0]) return { ok: true, canceled: true };
-    return await store.addMedia(filePaths[0]);
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('media:get', async (_e, id) => {
-  try { return await store.getMedia(id); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-
-ipcMain.handle('media:remove', async (_e, id) => {
-  try { return await store.removeMedia(id); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-
 ipcMain.handle('templates:get', async () => {
   try {
     return { ok: true, templates: await store.loadTemplates() };
@@ -639,6 +618,14 @@ ipcMain.handle('onboarding:done', async () => {
   }
 });
 
+ipcMain.handle('startedon:get', async () => {
+  try {
+    return { ok: true, ...(await store.getStartedOn()) };
+  } catch (err) {
+    return { ok: false, startedOn: '', error: err.message };
+  }
+});
+
 const PIN_PATTERN = /^\d{4,10}$/;
 
 ipcMain.handle('pin:status', async () => {
@@ -764,6 +751,64 @@ ipcMain.handle('app:copy-text', async (_e, text) => {
 ipcMain.handle('app:open-data-folder', async () => {
   await shell.openPath(paths.dataDir);
   return { ok: true };
+});
+
+ipcMain.handle('app:reset-all', async () => {
+  try {
+    const res = await store.resetAll();
+    if (res.ok && win && !win.isDestroyed()) {
+      // Come back up as a brand-new install: reload so onboarding runs again.
+      setImmediate(() => { if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache(); });
+    }
+    return res;
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Feedback goes straight to the developer over the internet from the MAIN
+// process, not the renderer: the journal window is network-sealed by
+// lockDownNetwork() and its CSP blocks fetch/XHR and form submissions, so the
+// only way out is Node's own HTTPS client here. The endpoint is fixed in code;
+// the renderer never supplies a URL. No journal data is ever included.
+const FEEDBACK_ENDPOINT = 'https://formspree.io/f/mkodjaqq';
+
+// POST a JSON body to urlStr and resolve { status, body }. Rejects on a
+// transport error or a 15s timeout; it never sends anything but the object given.
+function postJson(urlStr, obj) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const body = JSON.stringify(obj);
+    const req = https.request({
+      hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST', headers: {
+        'Content-Type': 'application/json', 'Accept': 'application/json', 'Content-Length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('The feedback service did not respond in time.')));
+    req.write(body);
+    req.end();
+  });
+}
+
+ipcMain.handle('feedback:send', async (_e, payload) => {
+  try {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const text = String(p.text == null ? '' : p.text).slice(0, 4000);
+    const name = String(p.name == null ? '' : p.name).slice(0, 60);
+    if (!text.trim()) return { ok: false, error: 'Nothing to send.' };
+    const { status } = await postJson(FEEDBACK_ENDPOINT, {
+      message: text, name, _subject: 'Flint feedback from ' + name
+    });
+    if (status >= 200 && status < 300) return { ok: true };
+    return { ok: false, error: 'The feedback service returned ' + status + '.' };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('app:version', async () => ({

@@ -9,7 +9,7 @@ const api = window.journal;
 let questions = (window.DEFAULT_QUESTIONS || []).map((q) => ({ ...q }));
 let knownTitles = {};
 const MARKERS = window.DAY_MARKERS || [
-  { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Hard day', short: 'Hard' }
+  { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Bad day', short: 'Bad' }
 ];
 const MAX_TAGS = 20;
 const MAX_TAG_LEN = 40;
@@ -185,6 +185,34 @@ function promptCapture() {
   });
 }
 
+// The feedback composer: a note plus an optional name. Resolves to { text, name }
+// or null if cancelled. The note is sent nowhere from here; the caller decides.
+function promptFeedback() {
+  return new Promise((resolve) => {
+    const root = $('modal-root');
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const modal = document.createElement('div'); modal.className = 'modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
+    const h = document.createElement('h2'); h.textContent = 'Share feedback';
+    const b = document.createElement('p'); b.className = 'modal-body';
+    b.textContent = 'What is working, what is not, or an idea. This sends your note privately to the app\'s maker over the internet. Nothing from your journal is included.';
+    const ta = document.createElement('textarea'); ta.className = 'modal-capture'; ta.rows = 5; ta.placeholder = 'Your feedback…'; ta.setAttribute('aria-label', 'Your feedback');
+    const field = document.createElement('div'); field.className = 'field';
+    const nameLabel = document.createElement('label'); nameLabel.setAttribute('for', 'feedback-name'); nameLabel.textContent = 'Name to sign it with (optional)';
+    const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.id = 'feedback-name'; nameInput.autocomplete = 'off'; nameInput.maxLength = 60; nameInput.placeholder = 'Left blank, a random name is used';
+    field.append(nameLabel, nameInput);
+    const row = document.createElement('div'); row.className = 'btn-row';
+    modal.append(h, b, ta, field, row); overlay.append(modal); root.append(overlay);
+    function close(val) { root.removeChild(overlay); document.removeEventListener('keydown', onKey, true); if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus(); resolve(val); }
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.addEventListener('click', () => close(null));
+    const send = document.createElement('button'); send.type = 'button'; send.className = 'primary'; send.textContent = 'Send'; send.addEventListener('click', () => close({ text: ta.value, name: nameInput.value }));
+    row.append(cancel, send);
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(null); } }
+    document.addEventListener('keydown', onKey, true);
+    ta.focus();
+  });
+}
+
 // A simple progress modal with an indeterminate bar, shown while a slower task
 // (like building and writing an export) runs. Returns a handle with close().
 function showProgressModal(title) {
@@ -228,7 +256,7 @@ function buildDayMarker() {
   for (const m of MARKERS) {
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'marker-btn';
     btn.dataset.key = m.key; btn.textContent = m.short; btn.setAttribute('aria-pressed', 'false');
-    btn.addEventListener('click', () => { currentDay = currentDay === m.key ? '' : m.key; renderDayMarker(); });
+    btn.addEventListener('click', () => { currentDay = currentDay === m.key ? '' : m.key; renderDayMarker(); updateEmptyHelpers(); });
     holder.append(btn);
   }
 }
@@ -263,49 +291,13 @@ function addTagFromInput() {
 
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 600) + 'px'; }
 
-/* photos */
-
-let currentMedia = [];
-
-async function renderMedia() {
-  const strip = $('media-strip');
-  strip.textContent = '';
-  if (!currentMedia.length) { strip.hidden = true; return; }
-  strip.hidden = false;
-  for (const m of currentMedia) {
-    const item = document.createElement('div'); item.className = 'media-item';
-    const img = document.createElement('img'); img.alt = m.name || 'Attached photo';
-    const del = document.createElement('button'); del.type = 'button'; del.className = 'media-remove'; del.textContent = '×';
-    del.setAttribute('aria-label', `Remove ${m.name || 'photo'}`);
-    del.addEventListener('click', () => { currentMedia = currentMedia.filter((x) => x.id !== m.id); renderMedia(); });
-    item.append(img, del); strip.append(item);
-    // The image comes back as a data URL, which the renderer's CSP allows.
-    const res = await safeCall(api.getMedia, m.id);
-    if (res.ok) img.src = res.dataUrl;
-    else {
-      item.classList.add('is-missing');
-      const msg = document.createElement('span'); msg.className = 'media-error'; msg.textContent = res.error || 'Missing';
-      item.append(msg);
-    }
-  }
-}
-
-async function addPhoto() {
-  const res = await safeCall(api.addMedia);
-  if (res.canceled) return;
-  if (!res.ok) { setStatus(res.error || 'That photo could not be added.', { error: true }); return; }
-  currentMedia.push({ id: res.id, name: res.name, type: res.type });
-  renderMedia();
-  setStatus('Photo added. Save the day to keep it.');
-}
-
 function noteValue() { return $('note').value; }
 function collectAnswers() {
   const v = {};
   if (guided) for (const q of questions) { const el = $(`box-${q.key}`); if (el) v[q.key] = el.value; }
   return v;
 }
-function currentState() { return { note: noteValue(), answers: collectAnswers(), day: currentDay, tags: currentTags.slice(), media: currentMedia.map((m) => m.id) }; }
+function currentState() { return { note: noteValue(), answers: collectAnswers(), day: currentDay, tags: currentTags.slice() }; }
 
 function isDirty() {
   if (!appReady) return false; // during the gate / onboarding there is nothing to save
@@ -313,7 +305,6 @@ function isDirty() {
   if (s.note !== snapshot.note) return true;
   if (s.day !== snapshot.day) return true;
   if (s.tags.join('\n') !== snapshot.tags.join('\n')) return true;
-  if (s.media.join('\n') !== (snapshot.media || []).join('\n')) return true;
   const keys = new Set([...Object.keys(s.answers), ...Object.keys(snapshot.answers)]);
   for (const k of keys) if ((s.answers[k] || '') !== (snapshot.answers[k] || '')) return true;
   return false;
@@ -336,7 +327,9 @@ function buildEntry(prev) {
   const note = noteValue(); if (note.trim()) entry.note = note;
   if (currentDay) entry.__day = currentDay;
   if (currentTags.length) entry.__tags = currentTags.slice();
-  if (currentMedia.length) entry.__media = currentMedia.map((m) => ({ ...m }));
+  // Photos can no longer be added, but any attached by an older version are kept
+  // as they were rather than dropped on the next save.
+  if (prev && Array.isArray(prev.__media) && prev.__media.length) entry.__media = prev.__media.map((m) => ({ ...m }));
   return entry;
 }
 function entryHasAny(entry) {
@@ -349,20 +342,21 @@ function entryHasAny(entry) {
 
 function loadEditor(dateIso) {
   currentDate = dateIso;
+  promptOffset = 0;
   const entry = data.entries[dateIso] || {};
   $('note').value = entryNote(entry);
   autosize($('note'));
   currentDay = typeof entry.__day === 'string' ? entry.__day : '';
   currentTags = entryTags(entry).slice();
-  currentMedia = entryMedia(entry).map((m) => ({ ...m }));
   $('tag-input').value = '';
-  renderDayMarker(); renderTags(); renderMedia();
+  renderDayMarker(); renderTags();
   if (guided) { buildPromptSections(); for (const q of questions) { const el = $(`box-${q.key}`); if (el) { el.value = typeof entry[q.key] === 'string' ? entry[q.key] : ''; autosize(el); } } }
   snapshot = currentState();
   // keep the calendar showing the month of the day being edited
   const d = new Date(dateIso + 'T00:00:00'); calYear = d.getFullYear(); calMonth = d.getMonth();
   renderWriterHead();
   renderLookback();
+  updateEmptyHelpers();
   if (previewOn) renderMarkdownInto($('note-preview'), noteValue());
 }
 
@@ -379,6 +373,113 @@ function renderWriterHead() {
   $('delete-btn').hidden = !(entry && entryHasAnyContent(entry));
 }
 
+/* empty-day helpers: the low-bar floor line and the optional prompt nudge */
+
+let startedOn = '';                 // first-run day, for the gentle starter week
+let promptOffset = 0;               // advances the offered prompt (the "Another" button)
+const dismissedNudges = new Set();  // days the nudge was waved off this session
+
+function daysBetween(aIso, bIso) {
+  const a = new Date(aIso + 'T00:00:00'), b = new Date(bIso + 'T00:00:00');
+  return Math.round((b - a) / 86400000);
+}
+// The Monday that starts a date's week, so "a new week" means crossing it.
+function mondayOf(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return ymd(d);
+}
+function inStarterWeek() {
+  if (!startedOn) return false;
+  const since = daysBetween(startedOn, todayISO());
+  return since >= 0 && since < 7;
+}
+function noteIsEmpty() { return !noteValue().trim(); }
+
+function updateEmptyHelpers() {
+  const empty = noteIsEmpty();
+  renderWriterHint(empty);
+  renderPromptNudge(empty);
+}
+
+// One faint line when the page is blank: the whole point is that a single line
+// is a complete day, and the writer's own plan is there if they set one.
+function renderWriterHint(empty) {
+  const el = $('writer-hint'); if (!el) return;
+  if (!appReady || !empty) { el.hidden = true; el.textContent = ''; return; }
+  const isToday = currentDate === todayISO();
+  el.textContent = isToday && inStarterWeek()
+    ? 'You are just settling in. Even one line counts as a day.'
+    : 'Even one line counts as a day.';
+  el.hidden = false;
+}
+
+function nudgePrompt() {
+  if (!window.promptForDay) return null;
+  // On a day the writer marked Hard, lean away from the cheery prompts.
+  const avoid = currentDay === 'hard' ? ['gratitude', 'savor', 'forward'] : [];
+  return window.promptForDay(currentDate, promptOffset, avoid);
+}
+
+// A calm inspiration card, only for a blank day, always cyclable and dismissible.
+function renderPromptNudge(empty) {
+  const box = $('prompt-nudge'); if (!box) return;
+  if (!appReady || !empty || dismissedNudges.has(currentDate)) { box.hidden = true; box.textContent = ''; return; }
+  const p = nudgePrompt();
+  if (!p) { box.hidden = true; box.textContent = ''; return; }
+  box.textContent = '';
+  const lead = document.createElement('span'); lead.className = 'nudge-lead'; lead.textContent = 'Need a nudge?';
+  const text = document.createElement('p'); text.className = 'nudge-text'; text.textContent = p.text;
+  const row = document.createElement('div'); row.className = 'nudge-actions';
+  const use = document.createElement('button'); use.type = 'button'; use.className = 'ghost small'; use.textContent = 'Use this';
+  use.addEventListener('click', () => useNudgePrompt(p.text));
+  const another = document.createElement('button'); another.type = 'button'; another.className = 'linklike'; another.textContent = 'Another';
+  another.addEventListener('click', () => { promptOffset++; renderPromptNudge(noteIsEmpty()); });
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'linklike nudge-dismiss'; dismiss.textContent = 'Not now';
+  dismiss.addEventListener('click', () => { dismissedNudges.add(currentDate); renderPromptNudge(false); });
+  row.append(use, another, dismiss);
+  box.append(lead, text, row);
+  box.hidden = false;
+}
+
+function useNudgePrompt(text) {
+  insertTemplate(`**${text}**\n\n`);
+  if (previewOn) renderMarkdownInto($('note-preview'), noteValue());
+  updateEmptyHelpers();
+}
+
+/* welcome-back / fresh-start greeting */
+
+let greetingShown = false;
+
+// A single, soft, dismissible line: warm if it has been a while, or a clean-page
+// note on a new week. Never counts what was missed, never fires if today is
+// already written or there is no history yet. Shown at most once per launch.
+function maybeShowGreeting() {
+  if (greetingShown || !appReady) return;
+  const box = $('greeting'); if (!box) return;
+  const today = todayISO();
+  if (entryHasAnyContent(data.entries[today])) return;
+  const written = Object.keys(data.entries).filter((d) => d < today && entryHasAnyContent(data.entries[d])).sort();
+  if (!written.length) return;
+  const last = written[written.length - 1];
+  let msg = '';
+  if (daysBetween(last, today) >= 4) {
+    msg = 'Welcome back. It has been a little while, and that is completely fine. Your page is here whenever you are.';
+  } else if (mondayOf(last) !== mondayOf(today)) {
+    msg = 'A new week, and a clean page whenever you want it.';
+  }
+  if (!msg) return;
+  greetingShown = true;
+  box.textContent = '';
+  const p = document.createElement('p'); p.className = 'greeting-text'; p.textContent = msg;
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'greeting-close';
+  close.setAttribute('aria-label', 'Dismiss'); close.textContent = '×';
+  close.addEventListener('click', () => { box.hidden = true; box.textContent = ''; });
+  box.append(p, close);
+  box.hidden = false;
+}
+
 async function saveCurrent() {
   if (saving) return false;
   if (loadFailed) {
@@ -391,7 +492,7 @@ async function saveCurrent() {
   try {
     const existed = Object.prototype.hasOwnProperty.call(data.entries, currentDate);
     const previous = existed ? data.entries[currentDate] : undefined;
-    const previousMediaIds = entryMedia(previous).map((m) => m.id);
+    const wasWrittenBefore = entryHasAnyContent(previous);
     const entry = buildEntry(previous);
     const hasContent = entryHasAny(entry);
     if (!hasContent && !existed) { setStatus('Nothing written for this day yet.'); return true; }
@@ -399,13 +500,13 @@ async function saveCurrent() {
     else delete data.entries[currentDate];
     const res = await safeCall(api.save, data);
     if (res.ok) {
-      // Only once the day is safely on disk without them do the files go.
-      const kept = new Set(entryMedia(entry).map((m) => m.id));
-      for (const id of previousMediaIds) if (!kept.has(id)) safeCall(api.removeMedia, id);
       snapshot = currentState();
-      setStatus(hasContent ? 'Saved.' : 'This day has been removed.');
+      // A quiet, warmer note the first time today crosses into "written", not on
+      // every save. Understated on purpose: a nod, not a fanfare.
+      const madeTodayWritten = hasContent && currentDate === todayISO() && !wasWrittenBefore;
+      setStatus(hasContent ? (madeTodayWritten ? 'Saved. That is today done.' : 'Saved.') : 'This day has been removed.');
       if (res.backupWarning) showNotice(res.backupWarning);
-      renderWriterHead(); renderCount(); renderCalendar();
+      renderWriterHead(); renderCount(); renderCalendar(); updateEmptyHelpers();
       return true;
     }
     if (existed) data.entries[currentDate] = previous; else delete data.entries[currentDate];
@@ -488,7 +589,6 @@ async function deleteDay(date) {
   if (choice !== 'delete') return;
   const previous = data.entries[date]; delete data.entries[date];
   const res = await safeCall(api.save, data);
-  if (res.ok) for (const m of entryMedia(previous)) safeCall(api.removeMedia, m.id);
   if (!res.ok) {
     data.entries[date] = previous;
     await showModal({ title: 'That day could not be removed', body: (res.error || 'Something went wrong writing to disk.') + '\n\nNothing was changed.', buttons: [{ label: 'OK', value: 'ok', kind: 'primary' }] });
@@ -1134,10 +1234,10 @@ function updatePrivacyEncryptionLine(encrypted) {
 
 // The footer reassurance line, worded to match the real encryption state.
 function updateFooter(encrypted) {
-  const el = $('app-foot'); if (!el) return;
+  const el = $('foot-text'); if (!el) return;
   el.textContent = encrypted
-    ? 'Your notes are encrypted on this computer with your PIN. Nothing is sent over the internet, the only thing Flint ever does online is check for updates.'
-    : 'Your notes stay on this computer. Nothing is sent over the internet, the only thing Flint ever does online is check for updates. Turn on a PIN in Settings to encrypt them too.';
+    ? 'Your notes are encrypted on this computer with your PIN. Your entries are never sent over the internet. The only times Flint goes online are to check for updates and to send feedback you choose to send.'
+    : 'Your notes stay on this computer. Your entries are never sent over the internet. The only times Flint goes online are to check for updates and to send feedback you choose to send. Turn on a PIN in Settings to encrypt them too.';
 }
 
 async function lockAndGate() {
@@ -1179,7 +1279,9 @@ function resetAutoLockTimer() {
 // save fails, stay unlocked rather than clear the page.
 async function autoLockNow() {
   if (!encryptedNow || !appReady || $('pin-gate').hidden === false) return;
-  if (modalIsOpen()) { resetAutoLockTimer(); return; }
+  // Don't lock out from under an open dialog or settings panel: being in one is a
+  // sign someone is still here. The timer resumes once it is closed.
+  if (modalIsOpen() || openPanelEl) { resetAutoLockTimer(); return; }
   if (isDirty()) {
     const saved = await saveCurrent();
     if (!saved) { resetAutoLockTimer(); return; }
@@ -1211,7 +1313,7 @@ function humanDuration(seconds) {
   const years = days / 365;
   if (years < 1000) return `about ${Math.round(years)} year${Math.round(years) === 1 ? '' : 's'}`;
   if (years < 1e6) return 'thousands of years';
-  return 'longer than anyone would ever try';
+  return 'millions of years';
 }
 
 function crackSeconds(pin) {
@@ -1231,19 +1333,11 @@ function pinStrength(pin) {
   if (!s) return { level: '', text: '' };
   if (s.length < 4) return { level: 'weak', text: 'Too short. Use at least 4 characters.' };
   const secs = crackSeconds(s);
-  const time = humanDuration(secs);
-  if (secs < 60 * 60) return { level: 'weak', text: `Weak: someone who copied your files could guess this in ${time}.` };
-  if (secs < 60 * 60 * 24 * 30) return { level: 'fair', text: `Fair: someone who copied your files would need ${time}.` };
-  if (secs < 60 * 60 * 24 * 365 * 100) return { level: 'good', text: `Good: guessing this would take ${time}.` };
-  return { level: 'strong', text: `Strong: guessing this would take ${time}.` };
-}
-// A plain comparison so the choice is concrete rather than a vague "use a good
-// PIN". Computed from the same model as the live hint, so the two cannot drift.
-function strengthComparison() {
-  return `Roughly: 4 digits ${humanDuration(crackSeconds('0000'))}, `
-    + `6 digits ${humanDuration(crackSeconds('000000'))}, `
-    + `8 digits ${humanDuration(crackSeconds('00000000'))}, `
-    + `a short word plus digits like "otter42" ${humanDuration(crackSeconds('otter42'))}.`;
+  const level = secs < 60 * 60 ? 'weak'
+    : secs < 60 * 60 * 24 * 30 ? 'fair'
+      : secs < 60 * 60 * 24 * 365 * 100 ? 'good'
+        : 'strong';
+  return { level, text: `This PIN could be cracked in ${humanDuration(secs)}.` };
 }
 
 function attachStrengthHint(input, hint) {
@@ -1262,8 +1356,7 @@ function secField(labelText, id, opts = {}) {
   if (opts.strength) {
     const hint = document.createElement('p'); hint.className = 'pin-hint';
     attachStrengthHint(input, hint);
-    const compare = document.createElement('p'); compare.className = 'soft small'; compare.textContent = strengthComparison();
-    wrap.append(hint, compare);
+    wrap.append(hint);
   }
   return { wrap, input };
 }
@@ -1456,8 +1549,10 @@ async function onboardEnableEncryption(e) {
   }
 }
 
-function finishOnboarding() {
-  safeCall(api.setOnboarded);
+async function finishOnboarding() {
+  // Awaited so the first-run day is stamped before the editor loads and the
+  // starter-week touch checks for it.
+  await safeCall(api.setOnboarded);
   $('onboarding').hidden = true;
   const done = onboardResolve; onboardResolve = null;
   if (done) done();
@@ -1467,7 +1562,6 @@ function finishOnboarding() {
 function wireOnboarding() {
   wireThemeChoice($('onboard-theme'));
   attachStrengthHint($('onboard-pin'), $('onboard-pin-hint'));
-  $('onboard-pin-compare').textContent = strengthComparison();
   $('onboard-theme-next').addEventListener('click', () => onboardGoto('pin'));
   $('onboard-pin-yes').addEventListener('click', () => onboardGoto('pin-entry'));
   $('onboard-pin-no').addEventListener('click', finishOnboarding);
@@ -1663,7 +1757,7 @@ function renderStats() {
   body.append(h1, p1, buildPixels());
 
   const legend = document.createElement('div'); legend.className = 'pixel-legend';
-  for (const [cls, text] of [['on', 'Written'], ['on m-good', 'Good'], ['on m-mixed', 'Mixed'], ['on m-hard', 'Hard']]) {
+  for (const [cls, text] of [['on', 'Written'], ['on m-good', 'Good'], ['on m-mixed', 'Mixed'], ['on m-hard', 'Bad']]) {
     const item = document.createElement('span'); item.className = 'pixel-legend-item';
     const sw = document.createElement('span'); sw.className = 'pixel ' + cls;
     const t = document.createElement('span'); t.textContent = text;
@@ -1697,7 +1791,7 @@ function renderStats() {
       if (!c[kind]) continue;
       const seg = document.createElement('span'); seg.className = 'corr-seg m-' + kind;
       seg.style.width = `${Math.round((c[kind] / marked) * 100)}%`;
-      seg.title = `${c[kind]} ${kind}`;
+      seg.title = `${c[kind]} ${(dayMarker(kind) || {}).short || kind}`;
       bar.append(seg);
     }
     row.append(head, bar); list.append(row);
@@ -1919,6 +2013,61 @@ function closePanel() {
 }
 function panelKey(e) { if (e.key === 'Escape') { e.preventDefault(); closePanel(); } }
 
+// Settings is one dialog with a category rail: show the chosen category, mark its
+// tab, and scroll the content back to the top.
+function showSettingsCat(cat) {
+  for (const b of document.querySelectorAll('#settings-nav .settings-nav-item')) b.classList.toggle('is-active', b.dataset.cat === cat);
+  for (const c of document.querySelectorAll('#settings-content .settings-cat')) c.hidden = c.dataset.cat !== cat;
+  const content = $('settings-content'); if (content) content.scrollTop = 0;
+}
+
+/* start over (reset everything) */
+
+// Two separate confirmations, both defaulting to the safe choice, because this
+// erases the whole journal with no undo. On success the main process reloads the
+// window straight into first-run onboarding, so there is nothing to do here.
+async function resetEverything() {
+  const first = await showModal({
+    title: 'Erase everything and start over?',
+    body: 'This deletes every entry and backup, your settings, and your PIN, and returns Flint to a brand-new setup. It cannot be undone, and there is no backup once it is gone.',
+    buttons: [{ label: 'Continue', value: 'go', kind: 'danger' }, { label: 'Keep my journal', value: 'keep', kind: 'primary' }],
+    focusValue: 'keep'
+  });
+  if (first !== 'go') return;
+  const second = await showModal({
+    title: 'Last chance, this is permanent',
+    body: 'Are you completely sure? Everything in Flint will be gone for good the moment you confirm.',
+    buttons: [{ label: 'Yes, erase everything', value: 'erase', kind: 'danger' }, { label: 'Cancel', value: 'cancel', kind: 'primary' }],
+    focusValue: 'cancel'
+  });
+  if (second !== 'erase') return;
+  $('reset-status').textContent = 'Erasing…';
+  const res = await safeCall(api.resetAll);
+  if (!res.ok) $('reset-status').textContent = res.error || 'That could not be completed.';
+}
+
+/* feedback */
+
+function randomHandle() {
+  const a = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let s = '';
+  for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)];
+  return 'flint-' + s;
+}
+
+async function sendFeedback() {
+  const fb = await promptFeedback();
+  if (!fb || !fb.text.trim()) return;
+  const name = fb.name.trim().slice(0, 60) || randomHandle();
+  const res = await safeCall(api.sendFeedback, { text: fb.text.trim(), name });
+  if (res.ok) {
+    await showModal({ title: 'Thanks', body: 'Your feedback was sent. Thank you.', buttons: [{ label: 'OK', kind: 'primary', value: true }] });
+  } else {
+    const body = 'Sorry, your feedback could not be sent just now. Please try again later.' + (res.error ? '\n' + res.error : '');
+    await showModal({ title: 'That could not be sent', body, buttons: [{ label: 'OK', kind: 'primary', value: true }] });
+  }
+}
+
 /* boot */
 
 async function init() {
@@ -1976,6 +2125,10 @@ async function init() {
     $('reminder-time').disabled = !remRes.reminder.enabled;
   }
 
+  // startedOn (stamped by finishOnboarding) drives the gentle starter-week hint.
+  const startRes = await safeCall(api.getStartedOn);
+  if (startRes.ok) startedOn = startRes.startedOn || '';
+
   const res = await safeCall(api.load);
   $('app').hidden = false;
   if (!res.ok) { loadFailed = true; showLoadErrorNotice(res.error); }
@@ -1992,11 +2145,13 @@ async function init() {
   resetAutoLockTimer();
   await setGuidedMode(guidedPref, false);
   renderCount(); renderCalendar();
+  updateEmptyHelpers();
+  maybeShowGreeting();
 
   if (needGate) $('note').focus();
 
   // editor inputs
-  $('note').addEventListener('input', () => autosize($('note')));
+  $('note').addEventListener('input', () => { autosize($('note')); updateEmptyHelpers(); });
   $('save-btn').addEventListener('click', () => saveCurrent());
   $('delete-btn').addEventListener('click', () => deleteDay(currentDate));
   $('tag-input').addEventListener('keydown', (e) => {
@@ -2007,7 +2162,6 @@ async function init() {
   $('guided-btn').addEventListener('click', () => setGuidedMode(!guided));
   $('tpl-btn').addEventListener('click', toggleTplMenu);
   $('preview-btn').addEventListener('click', () => setPreview(!previewOn));
-  $('photo-btn').addEventListener('click', addPhoto);
 
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (!modalIsOpen() && !openPanelEl) saveCurrent(); }
@@ -2031,7 +2185,8 @@ async function init() {
 
   // top bar
   $('theme-btn').addEventListener('click', toggleTheme);
-  $('settings-btn').addEventListener('click', () => { renderSecuritySettings(); renderDaysOff(); startPromptsEditor(); startTemplatesEditor(); openPanel($('settings-panel')); });
+  $('settings-btn').addEventListener('click', () => { renderSecuritySettings(); renderDaysOff(); startPromptsEditor(); startTemplatesEditor(); showSettingsCat('appearance'); openPanel($('settings-panel')); });
+  for (const btn of document.querySelectorAll('#settings-nav .settings-nav-item')) btn.addEventListener('click', () => showSettingsCat(btn.dataset.cat));
   $('quick-btn').addEventListener('click', quickCapture);
   $('stats-btn').addEventListener('click', () => { renderStats(); openPanel($('stats-panel')); });
   $('privacy-btn').addEventListener('click', () => openPanel($('privacy-panel')));
@@ -2053,7 +2208,7 @@ async function init() {
     if (!res.ok) { $('backup-status').textContent = res.error || 'That folder could not be used.'; return; }
     backupCfg = res.backup;
     renderBackup();
-    $('backup-status').textContent = 'On. Flint will keep a dated copy there once a day, photos included.';
+    $('backup-status').textContent = 'On. Flint will keep a dated copy there once a day.';
   });
   $('backup-now-btn').addEventListener('click', async () => {
     $('backup-status').textContent = 'Copying…';
@@ -2074,6 +2229,8 @@ async function init() {
   $('export-copy-btn').addEventListener('click', copyAll);
   $('import-json-btn').addEventListener('click', importJson);
   $('open-folder-btn').addEventListener('click', () => api.openDataFolder());
+  $('reset-btn').addEventListener('click', resetEverything);
+  $('foot-feedback').addEventListener('click', sendFeedback);
 
   // updates
   api.onUpdateStatus(handleUpdateStatus);

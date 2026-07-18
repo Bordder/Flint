@@ -26,8 +26,10 @@ const DEFAULT_QUESTIONS = [
 
 // The optional "How was today?" marker. Deliberately just three calm choices,
 // with no numbers and no scores. Kept so the app and the export agree on wording.
+// The key stays 'hard' so days already marked keep working; only the wording shown
+// to the reader changes.
 const DAY_MARKERS = [
-  { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Hard day', short: 'Hard' }
+  { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Bad day', short: 'Bad' }
 ];
 
 if (typeof module !== 'undefined' && module.exports) {

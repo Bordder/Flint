@@ -1,9 +1,10 @@
 # Flint
 
 A quiet, private daily journal for Windows. Your notes never leave this
-computer, everything lives in plain files on your PC. The only thing it ever
-does online is check for a new version (optional, and it only downloads, it
-never sends your entries anywhere). See sections 7–8.
+computer, everything lives in plain files on your PC. The only times it goes
+online are to check for a new version (optional, and it only downloads, it
+never sends your entries anywhere) and to send feedback you choose to send. See
+sections 7–8.
 
 ---
 
@@ -30,7 +31,7 @@ Then, in this project folder:
 4. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.1.0.exe
+   dist\Flint-Setup-1.2.0.exe
    ```
 
 (Optional: `npm test` runs the saving/backup self-checks. `npm start` runs
@@ -50,7 +51,7 @@ If you ever build and get a blank window, that fuse is the first thing to check.
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.1.0.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.2.0.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -98,7 +99,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.1.0.exe SHA256
+certutil -hashfile Flint-Setup-1.2.0.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -149,8 +150,8 @@ Write it down and keep it somewhere safe.
 From then on:
 
 - Flint asks for your PIN each time it opens, and decrypts your journal only in
-  memory once you unlock. On disk, `entries.json`, its backups and your photos
-  are all scrambled with AES-256.
+  memory once you unlock. On disk, `entries.json` and its backups are scrambled
+  with AES-256.
 - **Pick a PIN that is worth something.** This is the honest part: the encryption
   is only ever as strong as the PIN in front of it. Someone who copied your files
   could guess a 4-digit PIN in seconds and a 6-digit one in minutes, so Flint
@@ -166,8 +167,8 @@ From then on:
 - **Lose both the PIN and the recovery code** and the journal cannot be opened
   by anyone, including you. That is what makes the encryption real, so keep the
   recovery code safe and separate from this computer.
-- You can turn encryption off again (which writes your entries and photos back as
-  readable files) from the same Settings section.
+- You can turn encryption off again (which writes your entries back as readable
+  files) from the same Settings section.
 
 There is also an older, lighter **window PIN** that only hides the app window
 without encrypting anything. If you have one set (and haven't turned on
@@ -178,7 +179,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.1.0.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.2.0.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
@@ -192,7 +193,7 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
 - **Your own prompts.** Settings → "Your daily prompts" lets you rename, add, reorder or remove the daily boxes, make it a health diary, a work log, a
   gratitude journal, whatever you like. Removing a prompt only hides it;
   anything you already wrote under it stays saved and still shows and exports.
-- **"How was today?"** an optional Good / Mixed / Hard marker on each day.
+- **"How was today?"** an optional Good / Mixed / Bad marker on each day.
 - **Tags.** Label a day (e.g. "migraine", "holiday") and click any tag, or
   type it in Search, to pull up every day with it.
 - **Export** every day as a plain **text file**, a tidy **PDF**, or copy it all
@@ -201,6 +202,13 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
   Windows setting; your choice is remembered.
 - **A daily streak.** A small flame by the wordmark lights up once you have
   written today, and counts the days you have kept going.
+- **A nudge when the page is blank.** Open a day you have not written on yet and
+  Flint can offer a gentle prompt to start from. Ask for another, drop it into
+  your writing, or wave it away. The prompts are always optional and never
+  time-limited, and on a day you mark Hard they lean to the kinder ones.
+- **A quiet welcome back.** If it has been a while, or a new week has begun,
+  Flint opens with a calm, dismissible line, never a guilt trip, and it never
+  counts what you missed.
 - **Search and date filters** for finding past days.
 - **Encryption** with a PIN and one-time recovery code (optional, see section 4).
 - **A gentle first-run setup.** The first time Flint opens it asks your theme
@@ -215,15 +223,21 @@ rebuild, but you never need to: everything above is editable inside the app.
 
 Flint is built so your **notes never leave this computer**. The window you
 write in is sealed off from the network entirely, it cannot make an internet
-connection even if something tried to. The *only* thing the whole app ever does
-online is the optional update check (section 8), and even that only **downloads**
-a new version; it has no way to send your entries anywhere. No accounts, no
-sync, no analytics.
+connection even if something tried to. Only two things ever go online, and both
+only when you start them: the optional update check (section 8), and feedback
+you choose to send. The update check only **downloads** a new version, and
+feedback makes one outbound connection to a form service so it can reach the
+app's maker. Neither ever includes your journal entries. No accounts, no sync,
+no analytics.
 
 - The write-in window's network access is hard-blocked (`main.js`, `lockDownNetwork`), actively cancelled, not just avoided.
 - The update check runs in a separate part of the app and reaches only GitHub.
   The honest caveat: like any download, it reveals your computer's IP address to
   GitHub, but never a word of your journal.
+- Feedback is only sent when you fill in the Feedback box and click Send. It
+  carries just your note and the name you sign it with (a random one if you
+  leave it blank), and no journal content. It is posted from the main process,
+  not the sealed writing window.
 - Turn update checks off in Settings → Updates and Flint is fully offline
   again; it then behaves identically with Wi-Fi switched off.
 - Spellcheck is off (Windows spellcheck would fetch dictionaries); the PDF is

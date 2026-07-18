@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 
 const store = require('../store');
+const prompts = require('../shared/prompts');
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-test-'));
@@ -146,7 +147,7 @@ async function main() {
       food: 'Managed a sandwich.', __day: 'hard', __tags: ['migraine', 'work'], updatedAt: 'x'
     };
     const text = store.buildExportText(data, { questions: store.DEFAULT_QUESTIONS });
-    assert.match(text, /Overall: Hard day/);
+    assert.match(text, /Overall: Bad day/);
     assert.match(text, /Tags: migraine, work/);
   });
 
@@ -599,6 +600,55 @@ async function main() {
       assert.strictEqual(after.pin.N, 65536, 'the PIN wrap was rewritten at the current cost');
       store.lock();
       assert.strictEqual((await store.unlock('legacypin')).ok, true, 'the same PIN works after the upgrade');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('finishing onboarding stamps startedOn once and never overwrites it', async () => {
+    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-started-'));
+    store.init(r);
+    try {
+      assert.strictEqual((await store.getStartedOn()).startedOn, '', 'blank before onboarding');
+      await store.setOnboarded(true);
+      const stamped = (await store.getStartedOn()).startedOn;
+      assert.match(stamped, /^\d{4}-\d{2}-\d{2}$/, 'a local date was stamped');
+      await store.setOnboarded(true);
+      assert.strictEqual((await store.getStartedOn()).startedOn, stamped, 'a later run does not move it');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('prompt picker is stable per day, cycles, and dodges cheery cats on Hard days', async () => {
+    assert.strictEqual(
+      prompts.promptForDay('2026-07-17', 0, []).text,
+      prompts.promptForDay('2026-07-17', 0, []).text,
+      'same day and offset returns the same prompt'
+    );
+    assert.ok(prompts.promptForDay('2026-07-18', 0, []).text, 'the next day still returns a prompt');
+    const avoid = ['gratitude', 'savor', 'forward'];
+    for (let off = 0; off < 48; off++) {
+      assert.ok(!avoid.includes(prompts.promptForDay('2026-07-17', off, avoid).cat), `offset ${off} avoids cheery categories`);
+    }
+  });
+
+  await test('resetAll wipes entries, backups and settings back to brand new', async () => {
+    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-reset-'));
+    const PR = store.init(r);
+    try {
+      const d = store.emptyData();
+      d.entries['2026-04-01'] = { note: 'to be erased' };
+      await store.saveData(d);
+      await store.setOnboarded(true);
+      assert.ok(fs.existsSync(PR.dataFile), 'entries exist before reset');
+      const res = await store.resetAll();
+      assert.strictEqual(res.ok, true, 'reset reports ok');
+      assert.ok(!fs.existsSync(PR.dataFile), 'entries.json is gone');
+      assert.ok(!fs.existsSync(PR.settingsFile), 'settings.json is gone');
+      assert.deepStrictEqual((await store.loadData()).data.entries, {}, 'loads empty after reset');
+      assert.strictEqual(await store.getOnboarded(), false, 'onboarding is due again');
+      assert.strictEqual((await store.getStartedOn()).startedOn, '', 'startedOn cleared');
     } finally {
       store.init(root);
     }
