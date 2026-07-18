@@ -141,6 +141,9 @@
       <aside class="nav-pane" aria-label="Your days">
         <div class="cal-search">
           <input type="search" id="search-input" placeholder="Search your notes…" aria-label="Search your notes">
+          <button id="fav-filter-btn" class="icon-btn tip fav-filter" type="button" aria-pressed="false" data-tip="Show favourites">
+            <span class="fav-star" aria-hidden="true">★</span>
+          </button>
         </div>
         <div id="search-results" class="search-results" hidden aria-label="Search results"></div>
 
@@ -186,15 +189,36 @@
             <div class="day-marker" id="day-marker" role="group" aria-labelledby="day-marker-label"></div>
           </div>
           <div class="extra-block">
+            <span class="extra-label" id="trend-marker-label">Compared with usual <span class="soft small">(optional)</span></span>
+            <div class="day-marker" id="trend-marker" role="group" aria-labelledby="trend-marker-label"></div>
+          </div>
+          <div class="extra-block extra-tags">
             <label class="extra-label" for="tag-input">Tags <span class="soft small">(press Enter)</span></label>
             <div class="tag-editor">
               <div id="tag-list" class="tag-list"></div>
               <input type="text" id="tag-input" autocomplete="off" placeholder="e.g. migraine, good news">
             </div>
           </div>
+          <div class="extra-block extra-feelings">
+            <span class="extra-label" id="feelings-label">A feeling <span class="soft small">(optional)</span></span>
+            <div class="feelings-row">
+              <div id="feelings-list" class="tag-list" aria-label="Chosen feelings"></div>
+              <button id="feelings-add" class="ghost small" type="button" aria-expanded="false">Add a feeling</button>
+            </div>
+            <div id="feelings-picker" class="feelings-picker" role="group" aria-labelledby="feelings-label" hidden></div>
+          </div>
+          <div class="extra-block extra-activities">
+            <span class="extra-label" id="activities-label">What did today hold? <span class="soft small">(optional)</span></span>
+            <div class="feelings-row">
+              <div id="activities-list" class="tag-list" aria-label="Chosen activities"></div>
+              <button id="activities-add" class="ghost small" type="button" aria-expanded="false">Add activities</button>
+            </div>
+            <div id="activities-picker" class="feelings-picker" role="group" aria-labelledby="activities-label" hidden></div>
+          </div>
         </div>
 
         <div class="writer-foot">
+          <button id="fav-btn" class="ghost small fav-btn" type="button" aria-pressed="false" title="Favourite this day"><span class="fav-star" aria-hidden="true">★</span> Favourite</button>
           <button id="preview-btn" class="ghost small" type="button" aria-pressed="false">Preview</button>
           <div class="tpl-wrap">
             <button id="tpl-btn" class="ghost small" type="button" aria-haspopup="menu" aria-expanded="false">Template</button>
@@ -238,13 +262,14 @@
       <div class="settings-content" id="settings-content">
         <div class="settings-cat" data-cat="appearance">
           <section class="settings-block">
-            <h3>Appearance</h3>
-            <p class="soft">System follows your Windows light or dark setting.</p>
-            <div class="theme-choice" id="theme-choice" role="group" aria-label="Theme">
-              <button type="button" class="theme-opt" data-theme-pref="light" aria-pressed="false">Light</button>
-              <button type="button" class="theme-opt" data-theme-pref="dark" aria-pressed="false">Dark</button>
-              <button type="button" class="theme-opt" data-theme-pref="system" aria-pressed="false">System</button>
-            </div>
+            <h3>Theme</h3>
+            <p class="soft">Pick whatever's easiest on your eyes. System follows your Windows light or dark setting.</p>
+            <div class="theme-choice" id="theme-choice" role="group" aria-label="Theme"></div>
+          </section>
+          <section class="settings-block">
+            <h3>Accent colour</h3>
+            <p class="soft">A little colour for buttons, links and highlights. It works with any theme.</p>
+            <div class="accent-choice" id="accent-choice" role="group" aria-label="Accent colour"></div>
           </section>
         </div>
 
@@ -296,6 +321,17 @@
             </div>
             <p id="templates-status" class="status" role="status" aria-live="polite"></p>
           </section>
+
+          <section class="settings-block">
+            <h3>Your activities</h3>
+            <p class="soft">These are the choices in the "What did today hold?" picker under your writing. Put one on each line, and you can start a line with an emoji if you like.</p>
+            <textarea id="activities-editor" class="activities-editor" rows="8" spellcheck="false" aria-label="Your activities, one per line"></textarea>
+            <div class="btn-row prompts-actions">
+              <button id="activities-save-btn" class="primary" type="button">Save activities</button>
+              <button id="activities-reset-btn" class="ghost" type="button">Restore defaults</button>
+            </div>
+            <p id="activities-status" class="status" role="status" aria-live="polite"></p>
+          </section>
         </div>
 
         <div class="settings-cat" data-cat="security" hidden>
@@ -321,6 +357,16 @@
             <p class="soft small">Importing a JSON file only adds days you do not already have. Nothing already written is overwritten.</p>
             <div class="btn-row"><button id="import-json-btn" type="button">Import JSON…</button></div>
             <p id="export-status" class="status" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="settings-block">
+            <h3>Daily activities summary</h3>
+            <p class="soft">A plain, print-ready record of your days and how they varied, built around everyday activities. Handy to keep for yourself, or to show someone who's helping you.</p>
+            <div class="btn-row">
+              <button id="export-activities-btn" type="button">Text file…</button>
+              <button id="export-activities-pdf-btn" type="button">PDF…</button>
+            </div>
+            <p id="activities-report-status" class="status" role="status" aria-live="polite"></p>
           </section>
 
           <section class="settings-block">
@@ -399,6 +445,8 @@
   <script src="../shared/questions.js"></script>
   <script src="../shared/templates.js"></script>
   <script src="../shared/prompts.js"></script>
+  <script src="../shared/feelings.js"></script>
+  <script src="../shared/activities.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

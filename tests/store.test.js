@@ -151,6 +151,46 @@ async function main() {
     assert.match(text, /Tags: migraine, work/);
   });
 
+  await test('named feelings export and count as content', async () => {
+    const data = store.emptyData();
+    data.entries['2026-04-20'] = { __feelings: ['calm', 'hopeful'], updatedAt: 'x' };
+    const text = store.buildExportText(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(text, /1 day recorded/, 'a feelings-only day still exports');
+    assert.match(text, /Feelings: calm, hopeful/);
+    const md = store.buildExportMarkdown(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(md, /\*\*Feelings:\*\* calm, hopeful/);
+  });
+
+  await test('trajectory and activities export and count as content', async () => {
+    const data = store.emptyData();
+    data.entries['2026-05-01'] = { __trend: 'down', __activities: ['Rest', 'Walk'], updatedAt: 'x' };
+    const text = store.buildExportText(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(text, /1 day recorded/, 'a trajectory/activities-only day still exports');
+    assert.match(text, /Compared with usual: Harder than usual/);
+    assert.match(text, /Activities: Rest, Walk/);
+    const md = store.buildExportMarkdown(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(md, /\*\*Compared with usual:\*\* Harder than usual/);
+    assert.match(md, /\*\*Activities:\*\* Rest, Walk/);
+  });
+
+  await test('activities summary report is structured and stays discreet', async () => {
+    const data = store.emptyData();
+    data.entries['2026-05-02'] = { note: 'A quieter day.', __day: 'mixed', __trend: 'up', __activities: ['Rest'], updatedAt: 'x' };
+    const rep = store.buildActivityReport(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(rep, /DAILY ACTIVITIES SUMMARY/);
+    assert.match(rep, /everyday activities this record covers/i);
+    assert.match(rep, /Preparing food/, 'lists the everyday activity areas');
+    assert.match(rep, /Overall: Mixed day/);
+    assert.match(rep, /Compared with usual: Easier than usual/);
+    assert.match(rep, /Activities: Rest/);
+    assert.match(rep, /A quieter day\./);
+    assert.doesNotMatch(rep, /\b(PIP|DWP|benefit|assessment|disability|medical)\b/i, 'the report never labels itself');
+    const html = store.buildActivityReportHtml(data, { questions: store.DEFAULT_QUESTIONS });
+    assert.match(html, /Daily activities summary/);
+    assert.match(html, /Preparing food/);
+    assert.doesNotMatch(html, /\b(PIP|DWP|benefit|assessment|disability|medical)\b/i);
+  });
+
   await test('a day with only a marker or only tags still exports', async () => {
     const data = store.emptyData();
     data.entries['2026-04-11'] = { __day: 'good', updatedAt: 'x' };
@@ -260,6 +300,29 @@ async function main() {
     assert.strictEqual(await store.setTheme('system'), 'system', 'system is accepted');
     assert.strictEqual(await store.getTheme(), 'system');
     assert.strictEqual(await store.setTheme('nonsense'), 'light', 'unknown value falls back to light');
+  });
+
+  await test('theme accepts the preset palettes', async () => {
+    for (const t of ['sepia', 'soft-night', 'true-black']) {
+      assert.strictEqual(await store.setTheme(t), t, `${t} is accepted`);
+    }
+    assert.strictEqual(await store.setTheme('light'), 'light');
+  });
+
+  await test('accent get/set persists and rejects unknowns', async () => {
+    assert.strictEqual(await store.getAccent(), 'coral', 'defaults to coral');
+    assert.strictEqual(await store.setAccent('sage'), 'sage');
+    assert.strictEqual(await store.getAccent(), 'sage');
+    assert.strictEqual(await store.setAccent('nonsense'), 'coral', 'unknown value falls back to coral');
+  });
+
+  await test('activities default, then save + normalise (trim, dedupe, drop blank)', async () => {
+    const def = await store.loadActivities();
+    assert.ok(Array.isArray(def) && def.length > 0, 'has a default set');
+    const saved = await store.saveActivities(['  Rest  ', 'Rest', 'Walk', '', '   ']);
+    assert.deepStrictEqual(saved, ['Rest', 'Walk'], 'trims, dedupes case-insensitively, drops blanks');
+    assert.deepStrictEqual(await store.loadActivities(), ['Rest', 'Walk']);
+    await assert.rejects(() => store.saveActivities(['', '  ']), /at least one activity/i);
   });
 
   await test('onboarding flag defaults false, then persists', async () => {

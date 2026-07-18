@@ -31,8 +31,9 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 
-const { DEFAULT_QUESTIONS, DAY_MARKERS } = require('./shared/questions');
+const { DEFAULT_QUESTIONS, DAY_MARKERS, TRAJECTORY_MARKERS, REPORT_ACTIVITIES } = require('./shared/questions');
 const { DEFAULT_TEMPLATES } = require('./shared/templates');
+const { DEFAULT_ACTIVITIES } = require('./shared/activities');
 const vaultCrypto = require('./crypto');
 
 // Encryption session state. When the journal is encrypted, `entries.json` is a
@@ -516,12 +517,48 @@ async function saveTemplates(list) {
   return cleaned;
 }
 
+// --------------------------------------------------------------- activities
+
+// The optional activity picker's own list, editable by the user (one label per
+// line). Stored as plain strings; a day records the chosen labels as strings,
+// so editing this list never disturbs days already written.
+function normaliseActivities(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const a of list.slice(0, 60)) {
+    if (typeof a !== 'string') continue;
+    const label = a.trim().slice(0, 60);
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out.length ? out : null;
+}
+
+async function loadActivities() {
+  const s = await loadSettings();
+  return normaliseActivities(s.activities) || DEFAULT_ACTIVITIES.slice();
+}
+
+async function saveActivities(list) {
+  const cleaned = normaliseActivities(list);
+  if (!cleaned) throw new Error('You need at least one activity.');
+  const s = await loadSettings();
+  s.activities = cleaned;
+  await saveSettings(s);
+  return cleaned;
+}
+
 // -------------------------------------------------------------------- theme
 
-// Theme preference is one of 'light', 'dark' or 'system' (follow the OS). The
-// renderer resolves 'system' to light or dark at display time.
+// Theme preference: 'system' follows the OS (resolved to light or dark at
+// display time); the rest are full palettes the renderer applies directly.
+const THEME_CHOICES = ['light', 'dark', 'system', 'sepia', 'soft-night', 'true-black'];
 function normaliseTheme(t) {
-  return t === 'dark' || t === 'system' ? t : 'light';
+  return THEME_CHOICES.includes(t) ? t : 'light';
 }
 
 async function getTheme() {
@@ -534,6 +571,25 @@ async function setTheme(theme) {
   s.theme = normaliseTheme(theme);
   await saveSettings(s);
   return s.theme;
+}
+
+// The accent colour, a separate axis from the light/dark theme. 'coral' is the
+// original default (no override); the rest recolour the accent tokens only.
+const ACCENT_CHOICES = ['coral', 'sage', 'amber', 'blue', 'plum', 'rose'];
+function normaliseAccent(a) {
+  return ACCENT_CHOICES.includes(a) ? a : 'coral';
+}
+
+async function getAccent() {
+  const s = await loadSettings();
+  return normaliseAccent(s.accent);
+}
+
+async function setAccent(accent) {
+  const s = await loadSettings();
+  s.accent = normaliseAccent(accent);
+  await saveSettings(s);
+  return s.accent;
 }
 
 // An optional local nudge to write, off by default. The time is 24 hour HH:MM.
@@ -783,8 +839,25 @@ function dayMarkerLabel(entry) {
   return m ? m.label : '';
 }
 
+// The optional "compared with usual" trajectory marker (easier/same/harder).
+function trajectoryLabel(entry) {
+  if (!entry || !entry.__trend) return '';
+  const m = TRAJECTORY_MARKERS.find((x) => x.key === entry.__trend);
+  return m ? m.label : '';
+}
+
 function entryTags(entry) {
   return entry && Array.isArray(entry.__tags) ? entry.__tags.filter((t) => typeof t === 'string' && t.trim()) : [];
+}
+
+// The optional named feelings for a day (an array of words, e.g. "calm").
+function entryFeelings(entry) {
+  return entry && Array.isArray(entry.__feelings) ? entry.__feelings.filter((f) => typeof f === 'string' && f.trim()) : [];
+}
+
+// The optional activities tapped for a day (an array of labels).
+function entryActivities(entry) {
+  return entry && Array.isArray(entry.__activities) ? entry.__activities.filter((a) => typeof a === 'string' && a.trim()) : [];
 }
 
 // Exports are text, so photos are noted by count rather than embedded. A day
@@ -826,7 +899,10 @@ function entryHasContent(entry, questions, titles) {
   return (
     Boolean(entryNote(entry)) ||
     Boolean(dayMarkerLabel(entry)) ||
+    Boolean(trajectoryLabel(entry)) ||
     entryTags(entry).length > 0 ||
+    entryFeelings(entry).length > 0 ||
+    entryActivities(entry).length > 0 ||
     entryMediaCount(entry) > 0 ||
     orderedAnswers(entry, questions, titles).length > 0
   );
@@ -862,6 +938,12 @@ function buildExportText(data, opts = {}) {
     lines.push('-'.repeat(heading.length));
     const marker = dayMarkerLabel(entry);
     if (marker) lines.push(`Overall: ${marker}`);
+    const trend = trajectoryLabel(entry);
+    if (trend) lines.push(`Compared with usual: ${trend}`);
+    const feelings = entryFeelings(entry);
+    if (feelings.length) lines.push(`Feelings: ${feelings.join(', ')}`);
+    const activities = entryActivities(entry);
+    if (activities.length) lines.push(`Activities: ${activities.join(', ')}`);
     const tags = entryTags(entry);
     if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
     const photos = photosLine(entry);
@@ -899,11 +981,17 @@ function buildExportMarkdown(data, opts = {}) {
     out.push('', '---', '');
     out.push(`## ${longDateFromISO(date)}`);
     const marker = dayMarkerLabel(entry);
+    const trend = trajectoryLabel(entry);
+    const feelings = entryFeelings(entry);
+    const activities = entryActivities(entry);
     const tags = entryTags(entry);
     const photos = photosLine(entry);
-    if (marker || tags.length || photos) {
+    if (marker || trend || feelings.length || activities.length || tags.length || photos) {
       out.push('');
       if (marker) out.push(`**Overall:** ${marker}`);
+      if (trend) out.push(`**Compared with usual:** ${trend}`);
+      if (feelings.length) out.push(`**Feelings:** ${feelings.join(', ')}`);
+      if (activities.length) out.push(`**Activities:** ${activities.join(', ')}`);
       if (tags.length) out.push(`**Tags:** ${tags.join(', ')}`);
       if (photos) out.push(`**Photos:** ${photos} (kept in your data folder)`);
     }
@@ -990,6 +1078,143 @@ function buildExportHtml(data, opts = {}) {
     const badges = [];
     const marker = dayMarkerLabel(entry);
     if (marker) badges.push(`<span class="badge">${escapeHtml(marker)}</span>`);
+    const trend = trajectoryLabel(entry);
+    if (trend) badges.push(`<span class="badge">${escapeHtml(trend)}</span>`);
+    for (const f of entryFeelings(entry)) badges.push(`<span class="badge badge-feeling">${escapeHtml(f)}</span>`);
+    for (const a of entryActivities(entry)) badges.push(`<span class="badge">${escapeHtml(a)}</span>`);
+    for (const t of entryTags(entry)) badges.push(`<span class="badge">${escapeHtml(t)}</span>`);
+    const photos = photosLine(entry);
+    if (photos) badges.push(`<span class="badge">${escapeHtml(photos)}</span>`);
+    if (badges.length) parts.push(`<div class="day-meta">${badges.join('')}</div>`);
+    const note = entryNote(entry);
+    if (note) parts.push(`<p class="note">${escapeHtml(note)}</p>`);
+    for (const sec of orderedAnswers(entry, questions, titles)) {
+      parts.push('<div class="prompt">');
+      parts.push(`<p class="prompt-title">${escapeHtml(sec.title)}</p>`);
+      parts.push(`<p class="prompt-answer">${escapeHtml(sec.text)}</p>`);
+      parts.push('</div>');
+    }
+    parts.push('</section>');
+    if (i < dates.length - 1) parts.push('<hr class="day-rule">');
+  });
+
+  parts.push('</body></html>');
+  return parts.join('');
+}
+
+// --------------------------------------------------- activities summary
+//
+// A discreet, print-ready per-day record organised so that everyday activities
+// and how a day varied (easier/harder than usual) are easy to read at a glance,
+// e.g. to keep for your own reference or to show someone helping you. Uses only
+// what you have written; deliberately plain wording, no labels beyond that.
+
+function buildActivityReport(data, opts = {}) {
+  const questions = opts.questions || DEFAULT_QUESTIONS;
+  const titles = opts.knownTitles || {};
+  const now = opts.now || new Date();
+  const dates = contentDates(data, questions, titles);
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const lines = [];
+  lines.push('DAILY ACTIVITIES SUMMARY');
+  lines.push('========================');
+  lines.push(`Prepared ${longDate(now)} at ${time}`);
+  lines.push(`${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded`);
+  lines.push('');
+  lines.push('A day-by-day record of everyday activities and how they varied.');
+  lines.push('');
+  lines.push('The everyday activities this record covers:');
+  REPORT_ACTIVITIES.forEach((a, i) => lines.push(`  ${i + 1}. ${a}`));
+
+  for (const date of dates) {
+    const entry = data.entries[date];
+    const heading = longDateFromISO(date);
+    lines.push('');
+    lines.push('');
+    lines.push(heading);
+    lines.push('-'.repeat(heading.length));
+    const marker = dayMarkerLabel(entry);
+    if (marker) lines.push(`Overall: ${marker}`);
+    const trend = trajectoryLabel(entry);
+    if (trend) lines.push(`Compared with usual: ${trend}`);
+    const activities = entryActivities(entry);
+    if (activities.length) lines.push(`Activities: ${activities.join(', ')}`);
+    const feelings = entryFeelings(entry);
+    if (feelings.length) lines.push(`Feelings: ${feelings.join(', ')}`);
+    const tags = entryTags(entry);
+    if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
+    const photos = photosLine(entry);
+    if (photos) lines.push(`Photos: ${photos} (kept in your data folder)`);
+    const note = entryNote(entry);
+    if (note) { lines.push(''); lines.push(note); }
+    for (const sec of orderedAnswers(entry, questions, titles)) {
+      lines.push('');
+      lines.push(`  ${sec.title}`);
+      for (const ln of sec.text.split('\n')) lines.push(`    ${ln}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\r\n');
+}
+
+// The same summary as a self-contained printable HTML document (used for the
+// PDF). No external fonts, styles or images, so it prints the same offline.
+function buildActivityReportHtml(data, opts = {}) {
+  const questions = opts.questions || DEFAULT_QUESTIONS;
+  const titles = opts.knownTitles || {};
+  const now = opts.now || new Date();
+  const dates = contentDates(data, questions, titles);
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const parts = [];
+  parts.push('<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8">');
+  parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">');
+  parts.push('<style>');
+  parts.push(`
+    * { box-sizing: border-box; }
+    body { font-family: Georgia, "Times New Roman", serif; color: #2b2721; line-height: 1.6; margin: 0; padding: 0; }
+    .doc-head { border-bottom: 3px solid #c9772f; padding-bottom: 0.55rem; margin: 0 0 1.3rem; }
+    h1 { font-size: 22pt; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+    .meta { color: #6a6154; font-size: 10.5pt; margin: 0; }
+    .intro { font-size: 11.5pt; margin: 0 0 0.8rem; }
+    .areas { background: #f7f1e7; border: 1px solid #e2d7c4; border-radius: 8px; padding: 0.6rem 1rem; margin: 0 0 1.8rem; page-break-inside: avoid; }
+    .areas h2 { font-size: 11pt; text-transform: uppercase; letter-spacing: 0.05em; color: #9a6a2f; margin: 0 0 0.4rem; }
+    .areas ol { margin: 0; padding-left: 1.3rem; columns: 2; font-size: 10.5pt; }
+    .areas li { margin: 0 0 0.15rem; }
+    .day { margin: 0 0 1.4rem; page-break-inside: avoid; }
+    h3 { font-size: 14pt; margin: 0 0 0.35rem; color: #23201b; }
+    .day-meta { margin: 0 0 0.5rem; }
+    .badge { display: inline-block; font-size: 9.5pt; padding: 0.12rem 0.6rem; border-radius: 999px; background: #f0e6d6; color: #6a5a3d; margin: 0 0.35rem 0.25rem 0; }
+    .note { white-space: pre-wrap; font-size: 11.5pt; margin: 0.3rem 0 0.6rem; }
+    .prompt { margin: 0.6rem 0 0; }
+    .prompt-title { font-size: 10pt; font-weight: bold; color: #9a6a2f; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.1rem; }
+    .prompt-answer { white-space: pre-wrap; font-size: 11pt; margin: 0; }
+    hr.day-rule { border: 0; border-top: 1px solid #e2d7c4; margin: 0 0 1.4rem; }
+  `);
+  parts.push('</style></head><body>');
+  parts.push('<div class="doc-head"><h1>Daily activities summary</h1>');
+  parts.push(
+    `<p class="meta">Prepared ${escapeHtml(longDate(now))} at ${escapeHtml(time)} ` +
+    `&nbsp;&middot;&nbsp; ${dates.length} ${dates.length === 1 ? 'day' : 'days'} recorded</p></div>`
+  );
+  parts.push('<p class="intro">A day-by-day record of everyday activities and how they varied.</p>');
+  parts.push('<div class="areas"><h2>The everyday activities this record covers</h2><ol>');
+  for (const a of REPORT_ACTIVITIES) parts.push(`<li>${escapeHtml(a)}</li>`);
+  parts.push('</ol></div>');
+
+  dates.forEach((date, i) => {
+    const entry = data.entries[date];
+    parts.push('<section class="day">');
+    parts.push(`<h3>${escapeHtml(longDateFromISO(date))}</h3>`);
+    const badges = [];
+    const marker = dayMarkerLabel(entry);
+    if (marker) badges.push(`<span class="badge">${escapeHtml(marker)}</span>`);
+    const trend = trajectoryLabel(entry);
+    if (trend) badges.push(`<span class="badge">${escapeHtml(trend)}</span>`);
+    for (const act of entryActivities(entry)) badges.push(`<span class="badge">${escapeHtml(act)}</span>`);
+    for (const f of entryFeelings(entry)) badges.push(`<span class="badge">${escapeHtml(f)}</span>`);
     for (const t of entryTags(entry)) badges.push(`<span class="badge">${escapeHtml(t)}</span>`);
     const photos = photosLine(entry);
     if (photos) badges.push(`<span class="badge">${escapeHtml(photos)}</span>`);
@@ -1462,7 +1687,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, addMedia, getMedia, removeMedia, getTheme, setTheme, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

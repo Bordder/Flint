@@ -32,10 +32,29 @@ const DAY_MARKERS = [
   { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Bad day', short: 'Bad' }
 ];
 
+// A second, separate optional one-tap marker: how today compared with usual.
+// This is about direction (easier/harder), which the Good/Mixed/Bad marker does
+// not capture, and it is what makes day-to-day variation visible over time.
+// Stored under the reserved key __trend; keys are stable, never repurpose them.
+const TRAJECTORY_MARKERS = [
+  { key: 'up', label: 'Easier than usual', short: 'Easier' }, { key: 'same', label: 'About the same', short: 'Same' }, { key: 'down', label: 'Harder than usual', short: 'Harder' }
+];
+
+// The everyday activities the "Daily activities summary" export is organised
+// around. Kept as plain, general wording on purpose. Order is stable so the
+// summary reads the same each time.
+const REPORT_ACTIVITIES = [
+  'Preparing food', 'Eating and drinking', 'Managing treatments or health', 'Washing and bathing',
+  'Managing toilet needs', 'Dressing and undressing', 'Talking and understanding others', 'Reading',
+  'Being around other people', 'Managing money', 'Planning and making journeys', 'Moving around'
+];
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { DEFAULT_QUESTIONS, DAY_MARKERS };
+  module.exports = { DEFAULT_QUESTIONS, DAY_MARKERS, TRAJECTORY_MARKERS, REPORT_ACTIVITIES };
 }
 if (typeof window !== 'undefined') {
   window.DEFAULT_QUESTIONS = DEFAULT_QUESTIONS;
   window.DAY_MARKERS = DAY_MARKERS;
+  window.TRAJECTORY_MARKERS = TRAJECTORY_MARKERS;
+  window.REPORT_ACTIVITIES = REPORT_ACTIVITIES;
 }

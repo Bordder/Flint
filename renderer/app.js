@@ -8,8 +8,12 @@ const api = window.journal;
 
 let questions = (window.DEFAULT_QUESTIONS || []).map((q) => ({ ...q }));
 let knownTitles = {};
+let activityChoices = (window.DEFAULT_ACTIVITIES || []).slice(); // replaced from settings at init
 const MARKERS = window.DAY_MARKERS || [
   { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Bad day', short: 'Bad' }
+];
+const TRAJ_MARKERS = window.TRAJECTORY_MARKERS || [
+  { key: 'up', label: 'Easier than usual', short: 'Easier' }, { key: 'same', label: 'About the same', short: 'Same' }, { key: 'down', label: 'Harder than usual', short: 'Harder' }
 ];
 const MAX_TAGS = 20;
 const MAX_TAG_LEN = 40;
@@ -20,6 +24,10 @@ let paths = null;
 let currentDate = todayISO();
 let currentDay = '';
 let currentTags = [];
+let currentFeelings = [];           // optional named feelings for the open day
+let currentActivities = [];         // optional activities tapped for the open day
+let currentTrend = '';              // optional "compared with usual" marker
+let currentFav = false;             // whether the open day is favourited
 let guided = false;                 // show the optional guided prompts
 let snapshot = { note: '', answers: {}, day: '', tags: [] };
 let loadFailed = false;
@@ -54,6 +62,12 @@ function entryTags(entry) {
   return entry && Array.isArray(entry.__tags) ? entry.__tags.filter((t) => typeof t === 'string' && t.trim()) : [];
 }
 function entryNote(entry) { return entry && typeof entry.note === 'string' ? entry.note : ''; }
+function entryFeelings(entry) {
+  return entry && Array.isArray(entry.__feelings) ? entry.__feelings.filter((f) => typeof f === 'string' && f.trim()) : [];
+}
+function entryActivities(entry) {
+  return entry && Array.isArray(entry.__activities) ? entry.__activities.filter((a) => typeof a === 'string' && a.trim()) : [];
+}
 function dayMarker(key) { return MARKERS.find((m) => m.key === key) || null; }
 function entryMedia(entry) {
   return entry && Array.isArray(entry.__media) ? entry.__media.filter((m) => m && typeof m.id === 'string') : [];
@@ -72,7 +86,10 @@ function entryTexts(entry) {
 function entryHasAnyContent(entry) {
   if (!entry) return false;
   if (entry.__day) return true;
+  if (entry.__trend) return true;
   if (entryTags(entry).length) return true;
+  if (entryFeelings(entry).length) return true;
+  if (entryActivities(entry).length) return true;
   if (entryMedia(entry).length) return true;
   return entryTexts(entry).length > 0;
 }
@@ -291,20 +308,167 @@ function addTagFromInput() {
 
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 600) + 'px'; }
 
+/* feelings (optional emotion picker) */
+
+const MAX_FEELINGS = 6;
+const FEELING_WORDS = window.FEELINGS || [];
+const FEELING_GROUPS = window.FEELING_QUADRANTS || [];
+
+function renderFeelings() {
+  const list = $('feelings-list'); if (!list) return;
+  list.textContent = '';
+  currentFeelings.forEach((word, i) => {
+    const chip = document.createElement('span'); chip.className = 'tag-chip feeling-chip';
+    const text = document.createElement('span'); text.textContent = word;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'tag-remove';
+    remove.setAttribute('aria-label', `Remove feeling ${word}`); remove.textContent = '×';
+    remove.addEventListener('click', () => { currentFeelings.splice(i, 1); renderFeelings(); syncFeelingsPicker(); });
+    chip.append(text, remove); list.append(chip);
+  });
+}
+
+function buildFeelingsPicker() {
+  const box = $('feelings-picker'); if (!box) return;
+  box.textContent = '';
+  for (const quad of FEELING_GROUPS) {
+    const group = document.createElement('div'); group.className = 'feeling-group';
+    const h = document.createElement('p'); h.className = 'feeling-group-label soft small'; h.textContent = quad.label;
+    const words = document.createElement('div'); words.className = 'feeling-words';
+    for (const f of FEELING_WORDS.filter((x) => x.quad === quad.key)) {
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'feeling-word'; btn.dataset.word = f.word; btn.textContent = f.word;
+      const on = currentFeelings.includes(f.word);
+      btn.setAttribute('aria-pressed', String(on)); btn.classList.toggle('is-on', on);
+      btn.addEventListener('click', () => toggleFeeling(f.word, btn));
+      words.append(btn);
+    }
+    group.append(h, words); box.append(group);
+  }
+}
+function syncFeelingsPicker() {
+  const box = $('feelings-picker'); if (!box || box.hidden) return;
+  for (const btn of box.querySelectorAll('.feeling-word')) {
+    const on = currentFeelings.includes(btn.dataset.word);
+    btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on));
+  }
+}
+function toggleFeeling(word, btn) {
+  const i = currentFeelings.indexOf(word);
+  if (i >= 0) currentFeelings.splice(i, 1);
+  else { if (currentFeelings.length >= MAX_FEELINGS) return; currentFeelings.push(word); }
+  if (btn) { const on = currentFeelings.includes(word); btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on)); }
+  renderFeelings();
+}
+function toggleFeelingsPicker() {
+  const box = $('feelings-picker'); if (!box) return;
+  if (!box.hidden) { closeFeelingsPicker(); return; }
+  buildFeelingsPicker();
+  box.hidden = false; $('feelings-add').setAttribute('aria-expanded', 'true');
+}
+function closeFeelingsPicker() {
+  const box = $('feelings-picker'); if (!box) return;
+  box.hidden = true; const btn = $('feelings-add'); if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/* favourite (star a day) */
+
+function renderFav() {
+  const btn = $('fav-btn'); if (!btn) return;
+  btn.classList.toggle('is-on', currentFav);
+  btn.setAttribute('aria-pressed', String(currentFav));
+}
+function toggleFav() { currentFav = !currentFav; renderFav(); }
+
+/* trajectory marker (how today compared with usual) */
+
+function buildTrendMarker() {
+  const holder = $('trend-marker'); if (!holder) return;
+  holder.textContent = '';
+  for (const m of TRAJ_MARKERS) {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'marker-btn';
+    btn.dataset.key = m.key; btn.textContent = m.short; btn.setAttribute('aria-pressed', 'false');
+    btn.title = m.label;
+    btn.addEventListener('click', () => { currentTrend = currentTrend === m.key ? '' : m.key; renderTrendMarker(); updateEmptyHelpers(); });
+    holder.append(btn);
+  }
+}
+function renderTrendMarker() {
+  const holder = $('trend-marker'); if (!holder) return;
+  for (const btn of holder.querySelectorAll('.marker-btn')) {
+    const on = btn.dataset.key === currentTrend;
+    btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on));
+  }
+}
+
+/* activities (optional "what did today hold?" picker) */
+
+function renderActivities() {
+  const list = $('activities-list'); if (!list) return;
+  list.textContent = '';
+  currentActivities.forEach((label, i) => {
+    const chip = document.createElement('span'); chip.className = 'tag-chip feeling-chip';
+    const text = document.createElement('span'); text.textContent = label;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'tag-remove';
+    remove.setAttribute('aria-label', `Remove ${label}`); remove.textContent = '×';
+    remove.addEventListener('click', () => { currentActivities.splice(i, 1); renderActivities(); syncActivitiesPicker(); });
+    chip.append(text, remove); list.append(chip);
+  });
+}
+function buildActivitiesPicker() {
+  const box = $('activities-picker'); if (!box) return;
+  box.textContent = '';
+  const words = document.createElement('div'); words.className = 'feeling-words';
+  for (const label of activityChoices) {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'feeling-word'; btn.dataset.activity = label; btn.textContent = label;
+    const on = currentActivities.includes(label);
+    btn.setAttribute('aria-pressed', String(on)); btn.classList.toggle('is-on', on);
+    btn.addEventListener('click', () => toggleActivity(label, btn));
+    words.append(btn);
+  }
+  box.append(words);
+}
+function syncActivitiesPicker() {
+  const box = $('activities-picker'); if (!box || box.hidden) return;
+  for (const btn of box.querySelectorAll('.feeling-word')) {
+    const on = currentActivities.includes(btn.dataset.activity);
+    btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on));
+  }
+}
+function toggleActivity(label, btn) {
+  const i = currentActivities.indexOf(label);
+  if (i >= 0) currentActivities.splice(i, 1);
+  else currentActivities.push(label);
+  if (btn) { const on = currentActivities.includes(label); btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on)); }
+  renderActivities();
+}
+function toggleActivitiesPicker() {
+  const box = $('activities-picker'); if (!box) return;
+  if (!box.hidden) { closeActivitiesPicker(); return; }
+  buildActivitiesPicker();
+  box.hidden = false; $('activities-add').setAttribute('aria-expanded', 'true');
+}
+function closeActivitiesPicker() {
+  const box = $('activities-picker'); if (!box) return;
+  box.hidden = true; const btn = $('activities-add'); if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
 function noteValue() { return $('note').value; }
 function collectAnswers() {
   const v = {};
   if (guided) for (const q of questions) { const el = $(`box-${q.key}`); if (el) v[q.key] = el.value; }
   return v;
 }
-function currentState() { return { note: noteValue(), answers: collectAnswers(), day: currentDay, tags: currentTags.slice() }; }
+function currentState() { return { note: noteValue(), answers: collectAnswers(), day: currentDay, trend: currentTrend, tags: currentTags.slice(), feelings: currentFeelings.slice(), activities: currentActivities.slice(), fav: currentFav }; }
 
 function isDirty() {
   if (!appReady) return false; // during the gate / onboarding there is nothing to save
   const s = currentState();
   if (s.note !== snapshot.note) return true;
   if (s.day !== snapshot.day) return true;
+  if (s.trend !== (snapshot.trend || '')) return true;
   if (s.tags.join('\n') !== snapshot.tags.join('\n')) return true;
+  if (s.feelings.join('\n') !== (snapshot.feelings || []).join('\n')) return true;
+  if (s.activities.join('\n') !== (snapshot.activities || []).join('\n')) return true;
+  if (s.fav !== Boolean(snapshot.fav)) return true;
   const keys = new Set([...Object.keys(s.answers), ...Object.keys(snapshot.answers)]);
   for (const k of keys) if ((s.answers[k] || '') !== (snapshot.answers[k] || '')) return true;
   return false;
@@ -326,15 +490,24 @@ function buildEntry(prev) {
   }
   const note = noteValue(); if (note.trim()) entry.note = note;
   if (currentDay) entry.__day = currentDay;
+  if (currentTrend) entry.__trend = currentTrend;
   if (currentTags.length) entry.__tags = currentTags.slice();
+  if (currentFeelings.length) entry.__feelings = currentFeelings.slice();
+  if (currentActivities.length) entry.__activities = currentActivities.slice();
+  if (currentFav) entry.__fav = true;
   // Photos can no longer be added, but any attached by an older version are kept
   // as they were rather than dropped on the next save.
   if (prev && Array.isArray(prev.__media) && prev.__media.length) entry.__media = prev.__media.map((m) => ({ ...m }));
   return entry;
 }
+// A favourite flag on its own is not "content": you favourite a day you wrote,
+// not an empty one, so a lone star never conjures a phantom entry.
 function entryHasAny(entry) {
   if (entry.__day) return true;
+  if (entry.__trend) return true;
   if (Array.isArray(entry.__tags) && entry.__tags.length) return true;
+  if (Array.isArray(entry.__feelings) && entry.__feelings.length) return true;
+  if (Array.isArray(entry.__activities) && entry.__activities.length) return true;
   if (Array.isArray(entry.__media) && entry.__media.length) return true;
   for (const k of Object.keys(entry)) { if (isReservedKey(k)) continue; if (typeof entry[k] === 'string' && entry[k].trim()) return true; }
   return false;
@@ -347,9 +520,13 @@ function loadEditor(dateIso) {
   $('note').value = entryNote(entry);
   autosize($('note'));
   currentDay = typeof entry.__day === 'string' ? entry.__day : '';
+  currentTrend = typeof entry.__trend === 'string' ? entry.__trend : '';
   currentTags = entryTags(entry).slice();
+  currentFeelings = entryFeelings(entry).slice();
+  currentActivities = entryActivities(entry).slice();
+  currentFav = entry.__fav === true;
   $('tag-input').value = '';
-  renderDayMarker(); renderTags();
+  renderDayMarker(); renderTrendMarker(); renderTags(); renderFeelings(); renderActivities(); renderFav(); closeFeelingsPicker(); closeActivitiesPicker();
   if (guided) { buildPromptSections(); for (const q of questions) { const el = $(`box-${q.key}`); if (el) { el.value = typeof entry[q.key] === 'string' ? entry[q.key] : ''; autosize(el); } } }
   snapshot = currentState();
   // keep the calendar showing the month of the day being edited
@@ -804,6 +981,11 @@ function renderCalendar() {
       const dot = document.createElement('span');
       dot.className = 'cal-dot' + (entry.__day ? ' m-' + entry.__day : '');
       cell.append(dot);
+      if (entry.__fav) {
+        cell.classList.add('is-fav');
+        const star = document.createElement('span'); star.className = 'cal-star'; star.textContent = '★'; star.setAttribute('aria-hidden', 'true');
+        cell.append(star);
+      }
     }
     cell.addEventListener('click', () => selectDay(iso));
     grid.append(cell);
@@ -874,9 +1056,12 @@ function snippet(entry, term, width = 120) {
   const start = Math.max(0, at - 30);
   return (start ? '…' : '') + text.slice(start, start + width) + (start + width < text.length ? '…' : '');
 }
+let favFilterOn = false;
+
 function onSearch() {
   const term = $('search-input').value.trim().toLowerCase();
-  if (!term) { $('search-results').hidden = true; $('calendar').hidden = false; renderLookback(); return; }
+  if (term && favFilterOn) setFavFilter(false, true); // typing takes over from the favourites view
+  if (!term) { if (favFilterOn) return; $('search-results').hidden = true; $('calendar').hidden = false; renderLookback(); return; }
   $('calendar').hidden = true; $('search-results').hidden = false; $('lookback').hidden = true;
   const box = $('search-results'); box.textContent = '';
   const dates = Object.keys(data.entries).filter((d) => entryMatches(data.entries[d], term)).sort().reverse();
@@ -892,6 +1077,35 @@ function onSearch() {
       if (!(await guardDirty('opening that day'))) return;
       loadEditor(d); $('search-input').value = ''; $('search-results').hidden = true; $('calendar').hidden = false;
       renderCalendar(); $('note').focus();
+    });
+    box.append(item);
+  }
+}
+
+// The favourites view reuses the search-results pane to list starred days.
+function setFavFilter(on, keepSearch) {
+  favFilterOn = Boolean(on);
+  const btn = $('fav-filter-btn');
+  if (btn) { btn.setAttribute('aria-pressed', String(favFilterOn)); btn.classList.toggle('is-on', favFilterOn); }
+  if (!favFilterOn) {
+    if (!keepSearch) { $('search-results').hidden = true; $('calendar').hidden = false; renderLookback(); }
+    return;
+  }
+  $('search-input').value = '';
+  $('calendar').hidden = true; $('search-results').hidden = false; $('lookback').hidden = true;
+  const box = $('search-results'); box.textContent = '';
+  const dates = Object.keys(data.entries).filter((d) => data.entries[d] && data.entries[d].__fav && entryHasAnyContent(data.entries[d])).sort().reverse();
+  const head = document.createElement('p'); head.className = 'soft small search-count';
+  head.textContent = dates.length ? `${dates.length} ${dates.length === 1 ? 'favourite' : 'favourites'}` : 'No favourites yet. Star a day with the Favourite button.';
+  box.append(head);
+  for (const d of dates) {
+    const item = document.createElement('button'); item.type = 'button'; item.className = 'search-item';
+    const dd = document.createElement('div'); dd.className = 'search-item-date'; dd.textContent = mediumDate(d);
+    const sn = document.createElement('div'); sn.className = 'search-item-snip'; sn.textContent = snippet(data.entries[d], '');
+    item.append(dd, sn);
+    item.addEventListener('click', async () => {
+      if (!(await guardDirty('opening that day'))) return;
+      setFavFilter(false); loadEditor(d); renderCalendar(); $('note').focus();
     });
     box.append(item);
   }
@@ -965,6 +1179,22 @@ function copyAll() {
   });
 }
 
+function setReportStatus(msg, error = false) { const el = $('activities-report-status'); if (el) { el.textContent = msg; el.classList.toggle('error', error); } }
+function exportActivities() {
+  return runExport(api.exportActivities, (res) => {
+    if (!res.ok) setReportStatus(`Could not write: ${res.error}`, true);
+    else if (!res.canceled) setReportStatus(`Saved to ${res.path}`);
+    else setReportStatus('');
+  });
+}
+function exportActivitiesPdf() {
+  return runExport(api.exportActivitiesPdf, (res) => {
+    if (!res.ok) setReportStatus(`Could not write: ${res.error}`, true);
+    else if (!res.canceled) setReportStatus(`Saved to ${res.path}`);
+    else setReportStatus('');
+  });
+}
+
 // Importing adds days, so it needs no PIN: it never reveals anything.
 async function importJson() {
   if (!(await guardDirty('importing a journal file'))) return;
@@ -1008,15 +1238,75 @@ async function retryLoad() {
 
 const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
 let themePref = 'light';
+let accentPref = 'coral';
+const THEME_KEYS = ['light', 'dark', 'system', 'sepia', 'soft-night', 'true-black'];
+const DARK_THEMES = ['dark', 'soft-night', 'true-black'];
+const ACCENT_KEYS = ['coral', 'sage', 'amber', 'blue', 'plum', 'rose'];
+
+// Swatch previews (approximate the token palettes) so a choice can be seen
+// before it is applied. Three swatches: background, ink, accent.
+const THEME_META = [
+  { key: 'light', label: 'Light', sw: ['#faf7f2', '#3a352d', '#bd6a34'] },
+  { key: 'dark', label: 'Dark', sw: ['#2a2621', '#e9e4dc', '#e0915a'] },
+  { key: 'sepia', label: 'Paper', sw: ['#efe6d4', '#3a3025', '#bd6a34'] },
+  { key: 'soft-night', label: 'Soft night', sw: ['#211d18', '#e5e0d8', '#e0915a'] },
+  { key: 'true-black', label: 'True black', sw: ['#000000', '#f2ede6', '#eda06a'] },
+  { key: 'system', label: 'System', sw: ['#faf7f2', '#2a2621', '#bd6a34'] }
+];
+const ACCENT_META = [
+  { key: 'coral', label: 'Coral', color: '#bd6a34' },
+  { key: 'sage', label: 'Sage', color: '#5f7d55' },
+  { key: 'amber', label: 'Amber', color: '#9c7320' },
+  { key: 'blue', label: 'Blue', color: '#4f6f97' },
+  { key: 'plum', label: 'Plum', color: '#8a5a86' },
+  { key: 'rose', label: 'Rose', color: '#b1566a' }
+];
 
 function resolveTheme(pref) {
   if (pref === 'system') return darkMedia.matches ? 'dark' : 'light';
-  return pref === 'dark' ? 'dark' : 'light';
+  return (THEME_KEYS.includes(pref) && pref !== 'system') ? pref : 'light';
 }
 function applyTheme(pref) {
-  themePref = pref === 'dark' || pref === 'system' ? pref : 'light';
-  document.documentElement.dataset.theme = resolveTheme(themePref);
+  themePref = THEME_KEYS.includes(pref) ? pref : 'light';
+  const resolved = resolveTheme(themePref);
+  const root = document.documentElement;
+  root.dataset.theme = resolved;
+  root.dataset.mode = DARK_THEMES.includes(resolved) ? 'dark' : 'light';
   syncThemeChoice();
+}
+function applyAccent(accent) {
+  accentPref = ACCENT_KEYS.includes(accent) ? accent : 'coral';
+  const root = document.documentElement;
+  if (accentPref === 'coral') delete root.dataset.accent; // coral is the built-in default
+  else root.dataset.accent = accentPref;
+  syncAccentChoice();
+}
+function buildThemeChoices() {
+  const box = $('theme-choice'); if (!box) return;
+  box.textContent = '';
+  for (const t of THEME_META) {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'theme-opt'; btn.dataset.themePref = t.key; btn.setAttribute('aria-pressed', 'false');
+    const sw = document.createElement('span'); sw.className = 'theme-swatch'; sw.setAttribute('aria-hidden', 'true');
+    for (const c of t.sw) { const s = document.createElement('span'); s.style.background = c; sw.append(s); }
+    const label = document.createElement('span'); label.className = 'theme-opt-label'; label.textContent = t.label;
+    btn.append(sw, label);
+    btn.addEventListener('click', () => setThemePref(t.key));
+    box.append(btn);
+  }
+  syncThemeChoice();
+}
+function buildAccentChoices() {
+  const box = $('accent-choice'); if (!box) return;
+  box.textContent = '';
+  for (const a of ACCENT_META) {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'accent-opt'; btn.dataset.accent = a.key;
+    btn.setAttribute('aria-pressed', 'false'); btn.title = a.label; btn.setAttribute('aria-label', a.label);
+    const dot = document.createElement('span'); dot.className = 'accent-dot'; dot.style.background = a.color; dot.setAttribute('aria-hidden', 'true');
+    btn.append(dot);
+    btn.addEventListener('click', () => setAccentPref(a.key));
+    box.append(btn);
+  }
+  syncAccentChoice();
 }
 function syncThemeChoice() {
   for (const btn of document.querySelectorAll('.theme-opt')) {
@@ -1025,7 +1315,15 @@ function syncThemeChoice() {
     btn.setAttribute('aria-pressed', String(on));
   }
 }
+function syncAccentChoice() {
+  for (const btn of document.querySelectorAll('.accent-opt')) {
+    const on = btn.dataset.accent === accentPref;
+    btn.classList.toggle('is-selected', on);
+    btn.setAttribute('aria-pressed', String(on));
+  }
+}
 async function setThemePref(pref) { applyTheme(pref); await safeCall(api.setTheme, pref); }
+async function setAccentPref(accent) { applyAccent(accent); await safeCall(api.setAccent, accent); }
 function wireThemeChoice(container) {
   if (!container) return;
   for (const btn of container.querySelectorAll('.theme-opt')) {
@@ -1034,11 +1332,11 @@ function wireThemeChoice(container) {
 }
 // The top-bar button flips between light and dark from whatever is showing now.
 async function toggleTheme() {
-  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  const next = document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark';
   await setThemePref(next);
 }
 // If the preference is 'system', follow the OS the moment it flips light/dark.
-darkMedia.addEventListener('change', () => { if (themePref === 'system') document.documentElement.dataset.theme = resolveTheme('system'); });
+darkMedia.addEventListener('change', () => { if (themePref === 'system') applyTheme('system'); });
 
 /* updates */
 
@@ -1694,6 +1992,102 @@ function tagCorrelations() {
     .slice(0, 8);
 }
 
+let statsView = 'pixels12';
+let statsMonthRef = null;   // first-of-month Date for the month view
+let statsYearRef = null;    // year number for the year view
+
+// One heatmap cell for a date, shared by all three views.
+function heatCell(iso) {
+  const cell = document.createElement('span'); cell.className = 'pixel';
+  const entry = data.entries[iso];
+  if (iso > todayISO()) cell.classList.add('future');
+  else if (entryHasAnyContent(entry)) {
+    cell.classList.add('on');
+    if (entry.__day) cell.classList.add('m-' + entry.__day);
+    const marker = dayMarker(entry.__day);
+    cell.title = marker ? `${longDate(iso)}, ${marker.label}` : longDate(iso);
+  } else {
+    cell.title = longDate(iso);
+  }
+  return cell;
+}
+
+// A single month as a 7-column calendar heatmap (Monday-first, leading blanks).
+function buildMonthGrid(monthDate) {
+  const wrap = document.createElement('div'); wrap.className = 'pixel-cal';
+  const head = document.createElement('div'); head.className = 'pixel-cal-head';
+  for (const w of WEEKDAYS) { const s = document.createElement('span'); s.textContent = w[0]; s.title = w; head.append(s); }
+  wrap.append(head);
+  const grid = document.createElement('div'); grid.className = 'pixel-cal-grid';
+  const y = monthDate.getFullYear(), mo = monthDate.getMonth();
+  const startDow = (new Date(y, mo, 1).getDay() + 6) % 7; // Mon = 0
+  for (let i = 0; i < startDow; i++) { const b = document.createElement('span'); b.className = 'pixel blank'; grid.append(b); }
+  const days = new Date(y, mo + 1, 0).getDate();
+  for (let d = 1; d <= days; d++) grid.append(heatCell(ymd(new Date(y, mo, d))));
+  wrap.append(grid);
+  return wrap;
+}
+
+// A whole year as GitHub-style week columns (Monday-first rows), Jan to Dec.
+function buildYearGrid(year) {
+  const wrap = document.createElement('div'); wrap.className = 'pixel-year';
+  const grid = document.createElement('div'); grid.className = 'pixel-year-grid';
+  const end = new Date(year, 11, 31).getTime();
+  const cur = new Date(mondayOf(ymd(new Date(year, 0, 1))) + 'T00:00:00');
+  while (cur.getTime() <= end) {
+    const col = document.createElement('div'); col.className = 'pixel-week';
+    for (let dow = 0; dow < 7; dow++) {
+      if (cur.getFullYear() === year) col.append(heatCell(ymd(cur)));
+      else { const b = document.createElement('span'); b.className = 'pixel blank'; col.append(b); }
+      cur.setDate(cur.getDate() + 1);
+    }
+    grid.append(col);
+  }
+  wrap.append(grid);
+  return wrap;
+}
+
+function heatNavBtn(txt, aria, fn) {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'pixel-nav-btn'; b.textContent = txt; b.setAttribute('aria-label', aria);
+  b.addEventListener('click', fn); return b;
+}
+function setStatsView(v) { statsView = v; renderHeatmapArea(); }
+function renderHeatmapArea() {
+  const host = $('stats-heatmap'); if (!host) return;
+  host.textContent = '';
+  for (const b of document.querySelectorAll('.stats-view-btn')) {
+    const on = b.dataset.view === statsView;
+    b.classList.toggle('is-on', on); b.setAttribute('aria-pressed', String(on));
+  }
+  const today = new Date(todayISO() + 'T00:00:00');
+  if (statsView === 'month') {
+    if (!statsMonthRef) statsMonthRef = new Date(today.getFullYear(), today.getMonth(), 1);
+    const nav = document.createElement('div'); nav.className = 'pixel-nav';
+    const label = document.createElement('span'); label.className = 'pixel-nav-label';
+    label.textContent = statsMonthRef.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    nav.append(
+      heatNavBtn('‹', 'Previous month', () => { statsMonthRef = new Date(statsMonthRef.getFullYear(), statsMonthRef.getMonth() - 1, 1); renderHeatmapArea(); }),
+      label,
+      heatNavBtn('›', 'Next month', () => { statsMonthRef = new Date(statsMonthRef.getFullYear(), statsMonthRef.getMonth() + 1, 1); renderHeatmapArea(); })
+    );
+    host.append(nav, buildMonthGrid(statsMonthRef));
+  } else if (statsView === 'year') {
+    if (statsYearRef == null) statsYearRef = today.getFullYear();
+    const nav = document.createElement('div'); nav.className = 'pixel-nav';
+    const label = document.createElement('span'); label.className = 'pixel-nav-label'; label.textContent = String(statsYearRef);
+    nav.append(
+      heatNavBtn('‹', 'Previous year', () => { statsYearRef -= 1; renderHeatmapArea(); }),
+      label,
+      heatNavBtn('›', 'Next year', () => { statsYearRef += 1; renderHeatmapArea(); })
+    );
+    host.append(nav, buildYearGrid(statsYearRef));
+  } else {
+    const cap = document.createElement('p'); cap.className = 'soft small';
+    cap.textContent = 'One square per day for the last twelve months, tinted by how the day went.';
+    host.append(cap, buildPixels());
+  }
+}
+
 function buildPixels() {
   const wrap = document.createElement('div'); wrap.className = 'pixels';
   const now = new Date(todayISO() + 'T00:00:00');
@@ -1751,10 +2145,19 @@ function renderStats() {
     return;
   }
 
-  const h1 = document.createElement('h3'); h1.textContent = 'Your year in pixels';
-  const p1 = document.createElement('p'); p1.className = 'soft small';
-  p1.textContent = 'One square per day for the last twelve months, tinted by how the day went.';
-  body.append(h1, p1, buildPixels());
+  const h1 = document.createElement('h3'); h1.textContent = 'Your days at a glance';
+  body.append(h1);
+  const viewBar = document.createElement('div'); viewBar.className = 'stats-views'; viewBar.setAttribute('role', 'group'); viewBar.setAttribute('aria-label', 'Heatmap view');
+  for (const [v, label] of [['pixels12', '12 months'], ['month', 'Month'], ['year', 'Year']]) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'stats-view-btn'; b.dataset.view = v; b.textContent = label;
+    b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', () => setStatsView(v));
+    viewBar.append(b);
+  }
+  body.append(viewBar);
+  const host = document.createElement('div'); host.id = 'stats-heatmap'; host.className = 'stats-heatmap';
+  body.append(host);
+  renderHeatmapArea();
 
   const legend = document.createElement('div'); legend.className = 'pixel-legend';
   for (const [cls, text] of [['on', 'Written'], ['on m-good', 'Good'], ['on m-mixed', 'Mixed'], ['on m-hard', 'Bad']]) {
@@ -1866,7 +2269,23 @@ function renderMarkdownInto(container, src) {
     if (/^\s*[-*+]\s+/.test(line)) {
       const ul = document.createElement('ul');
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        const li = document.createElement('li'); appendInline(li, lines[i].replace(/^\s*[-*+]\s+/, '')); ul.append(li); i++;
+        const li = document.createElement('li');
+        // A task item ("- [ ] ..." or "- [x] ...") becomes a real checkbox that
+        // ticks the underlying line; anything else stays a plain bullet.
+        const tm = lines[i].match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
+        if (tm) {
+          li.className = 'task-item';
+          const box = document.createElement('input'); box.type = 'checkbox'; box.className = 'task-check';
+          box.checked = tm[1].toLowerCase() === 'x';
+          const idx = i;
+          box.addEventListener('change', () => toggleTaskLine(idx, box.checked));
+          const span = document.createElement('span'); span.className = 'task-text' + (box.checked ? ' done' : '');
+          appendInline(span, tm[2]);
+          li.append(box, span);
+        } else {
+          appendInline(li, lines[i].replace(/^\s*[-*+]\s+/, ''));
+        }
+        ul.append(li); i++;
       }
       container.append(ul);
       continue;
@@ -1889,6 +2308,23 @@ function renderMarkdownInto(container, src) {
     const p = document.createElement('p'); p.className = 'soft'; p.textContent = 'Nothing written for this day yet.';
     container.append(p);
   }
+}
+
+// Toggle a task line in the note from a clicked preview checkbox, then re-render
+// the preview and save so the tick sticks. The line index was captured when the
+// preview was built (the note is a read-only view while the preview is showing).
+function toggleTaskLine(idx, checked) {
+  const ta = $('note');
+  const lines = ta.value.split('\n');
+  if (idx < 0 || idx >= lines.length) return;
+  const m = lines[idx].match(/^(\s*[-*+]\s+\[)([ xX])(\].*)$/);
+  if (!m) return;
+  lines[idx] = m[1] + (checked ? 'x' : ' ') + m[3];
+  ta.value = lines.join('\n');
+  autosize(ta);
+  if (previewOn) renderMarkdownInto($('note-preview'), noteValue());
+  updateEmptyHelpers();
+  saveCurrent();
 }
 
 function setPreview(on) {
@@ -1972,6 +2408,21 @@ async function saveTemplatesEdits() {
   if (!res.ok) { renderTemplatesEditor(res.error || 'Those templates could not be saved.'); return; }
   templates = res.templates;
   startTemplatesEditor(); renderTemplatesEditor('Saved. Your templates are updated.');
+}
+
+function startActivitiesEditor() {
+  const ed = $('activities-editor'); if (!ed) return;
+  ed.value = activityChoices.join('\n');
+  const st = $('activities-status'); if (st) st.textContent = '';
+}
+async function saveActivitiesEdits() {
+  const list = $('activities-editor').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!list.length) { $('activities-status').textContent = 'Add at least one activity before saving.'; return; }
+  const res = await safeCall(api.setActivities, list);
+  if (!res.ok) { $('activities-status').textContent = res.error || 'Those activities could not be saved.'; return; }
+  activityChoices = res.activities;
+  startActivitiesEditor();
+  $('activities-status').textContent = 'Saved. Your activities are updated.';
 }
 
 /* focus mode */
@@ -2073,6 +2524,8 @@ async function sendFeedback() {
 async function init() {
   const themeRes = await safeCall(api.getTheme);
   applyTheme(themeRes.ok ? themeRes.theme : 'light');
+  const accentRes = await safeCall(api.getAccent);
+  applyAccent(accentRes.ok ? accentRes.accent : 'coral');
 
   // Wire the lock gate and onboarding once; each is driven by a promise below.
   $('pin-form').addEventListener('submit', onGateSubmit);
@@ -2106,6 +2559,9 @@ async function init() {
   const tRes = await safeCall(api.getTemplates);
   if (tRes.ok && Array.isArray(tRes.templates) && tRes.templates.length) templates = tRes.templates;
 
+  const actRes = await safeCall(api.getActivities);
+  if (actRes.ok && Array.isArray(actRes.activities) && actRes.activities.length) activityChoices = actRes.activities;
+
   const gRes = await safeCall(api.getGuided);
   const guidedPref = gRes.ok ? gRes.guided : false;
 
@@ -2137,6 +2593,7 @@ async function init() {
   if (paths) $('data-path').textContent = paths.dataFile;
 
   buildDayMarker();
+  buildTrendMarker();
   const wk = $('cal-weekdays'); for (const w of WEEKDAYS) { const s = document.createElement('span'); s.textContent = w; wk.append(s); }
 
   const today = new Date(); calYear = today.getFullYear(); calMonth = today.getMonth();
@@ -2162,6 +2619,10 @@ async function init() {
   $('guided-btn').addEventListener('click', () => setGuidedMode(!guided));
   $('tpl-btn').addEventListener('click', toggleTplMenu);
   $('preview-btn').addEventListener('click', () => setPreview(!previewOn));
+  $('feelings-add').addEventListener('click', toggleFeelingsPicker);
+  $('activities-add').addEventListener('click', toggleActivitiesPicker);
+  $('fav-btn').addEventListener('click', toggleFav);
+  $('fav-filter-btn').addEventListener('click', () => setFavFilter(!favFilterOn));
 
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (!modalIsOpen() && !openPanelEl) saveCurrent(); }
@@ -2185,7 +2646,7 @@ async function init() {
 
   // top bar
   $('theme-btn').addEventListener('click', toggleTheme);
-  $('settings-btn').addEventListener('click', () => { renderSecuritySettings(); renderDaysOff(); startPromptsEditor(); startTemplatesEditor(); showSettingsCat('appearance'); openPanel($('settings-panel')); });
+  $('settings-btn').addEventListener('click', () => { renderSecuritySettings(); renderDaysOff(); startPromptsEditor(); startTemplatesEditor(); startActivitiesEditor(); showSettingsCat('appearance'); openPanel($('settings-panel')); });
   for (const btn of document.querySelectorAll('#settings-nav .settings-nav-item')) btn.addEventListener('click', () => showSettingsCat(btn.dataset.cat));
   $('quick-btn').addEventListener('click', quickCapture);
   $('stats-btn').addEventListener('click', () => { renderStats(); openPanel($('stats-panel')); });
@@ -2196,7 +2657,8 @@ async function init() {
   for (const btn of document.querySelectorAll('[data-close]')) btn.addEventListener('click', closePanel);
 
   // settings panel controls
-  wireThemeChoice($('theme-choice'));
+  buildThemeChoices();
+  buildAccentChoices();
   $('guided-toggle').addEventListener('change', () => setGuidedMode($('guided-toggle').checked));
   $('reminder-toggle').addEventListener('change', saveReminder);
   $('reminder-time').addEventListener('change', saveReminder);
@@ -2222,11 +2684,15 @@ async function init() {
   $('tpl-add-btn').addEventListener('click', () => { tplDraft.push({ name: '', body: '' }); renderTemplatesEditor(); const inputs = $('templates-list').querySelectorAll('.tpl-name'); if (inputs.length) inputs[inputs.length - 1].focus(); });
   $('tpl-save-btn').addEventListener('click', saveTemplatesEdits);
   $('tpl-reset-btn').addEventListener('click', () => { startTemplatesEditor(); renderTemplatesEditor('Changes discarded.'); });
+  $('activities-save-btn').addEventListener('click', saveActivitiesEdits);
+  $('activities-reset-btn').addEventListener('click', () => { $('activities-editor').value = (window.DEFAULT_ACTIVITIES || []).join('\n'); $('activities-status').textContent = 'Defaults restored. Press Save to keep them.'; });
   $('export-file-btn').addEventListener('click', exportToFile);
   $('export-pdf-btn').addEventListener('click', exportToPdf);
   $('export-md-btn').addEventListener('click', exportToMarkdown);
   $('export-json-btn').addEventListener('click', exportToJson);
   $('export-copy-btn').addEventListener('click', copyAll);
+  $('export-activities-btn').addEventListener('click', exportActivities);
+  $('export-activities-pdf-btn').addEventListener('click', exportActivitiesPdf);
   $('import-json-btn').addEventListener('click', importJson);
   $('open-folder-btn').addEventListener('click', () => api.openDataFolder());
   $('reset-btn').addEventListener('click', resetEverything);

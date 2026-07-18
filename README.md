@@ -33,12 +33,12 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.2.0.exe
+   dist\Flint-Setup-1.3.0.exe
    ```
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.2.0.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.3.0.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -86,7 +86,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.2.0.exe SHA256
+certutil -hashfile Flint-Setup-1.3.0.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -166,7 +166,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.2.0.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.3.0.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
@@ -180,15 +180,27 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
 - **Your own prompts.** Settings → "Your daily prompts" lets you rename, add, reorder or remove the daily boxes, make it a health diary, a work log, a
   gratitude journal, whatever you like. Removing a prompt only hides it;
   anything you already wrote under it stays saved and still shows and exports.
-- **"How was today?"** an optional Good / Mixed / Bad marker on each day.
+- **"How was today?"** an optional Good / Mixed / Bad marker on each day, plus a
+  separate one-tap **"compared with usual"** (easier, the same, or harder) so
+  changes from day to day are easy to see later.
+- **A word for how you felt, and what the day held.** Two optional pickers under
+  your writing: name a feeling or two, and tap the everyday things you did.
+- **Star a day** you want to find again and filter to just your favourites; and
+  write `- [ ] something` in a note to get a checkbox you can tick in the preview.
 - **Tags.** Label a day (e.g. "migraine", "holiday") and click any tag, or
   type it in Search, to pull up every day with it.
 - **Export** every day as a plain **text file**, a tidy **PDF**, or copy it all
-  to paste elsewhere (Settings → "Take your journal with you").
-- **Light, dark, or system theme.** Settings → Appearance. System follows your
-  Windows setting; your choice is remembered.
+  to paste elsewhere (Settings → "Take your journal with you"). There is also a
+  **Daily activities summary** (text or PDF) that lays your days out around
+  everyday activities, handy to keep for yourself or to show someone helping you.
+- **Themes and accent colours.** Settings → Appearance. Light, dark or system
+  (which follows Windows), plus warm **Paper**, **Soft night** and **True black**,
+  and a choice of accent colours. Your choice is remembered.
 - **A daily streak.** A small flame by the wordmark lights up once you have
   written today, and counts the days you have kept going.
+- **Your patterns.** A quiet panel (the chart icon) shows how many days you have
+  written, your streaks, and a heatmap of your days, viewable by month, by year,
+  or across the last twelve.
 - **A nudge when the page is blank.** Open a day you have not written on yet and
   Flint can offer a gentle prompt to start from. Ask for another, drop it into
   your writing, or wave it away. The prompts are always optional and never

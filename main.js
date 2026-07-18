@@ -447,6 +447,38 @@ ipcMain.handle('journal:copy-all', async () => {
   }
 });
 
+// The discreet "Daily activities summary" (text and PDF variants).
+ipcMain.handle('journal:export-activities', async () => {
+  try {
+    const { data, questions, knownTitles } = await exportContext();
+    const text = store.buildActivityReport(data, { questions, knownTitles });
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: 'Save activities summary', defaultPath: path.join(app.getPath('documents'), `flint-activities-${todayISO()}.txt`), filters: [{ name: 'Text file', extensions: ['txt'] }]
+    });
+    if (canceled || !filePath) return { ok: true, canceled: true };
+    await require('fs').promises.writeFile(filePath, text, 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('journal:export-activities-pdf', async () => {
+  try {
+    const { data, questions, knownTitles } = await exportContext();
+    const html = store.buildActivityReportHtml(data, { questions, knownTitles });
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: 'Save activities summary as a PDF', defaultPath: path.join(app.getPath('documents'), `flint-activities-${todayISO()}.pdf`), filters: [{ name: 'PDF file', extensions: ['pdf'] }]
+    });
+    if (canceled || !filePath) return { ok: true, canceled: true };
+    const pdf = await renderPdf(html);
+    await require('fs').promises.writeFile(filePath, pdf);
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('questions:get', async () => {
   try {
     const [questions, titles] = await Promise.all([store.loadQuestions(), store.knownTitles()]);
@@ -481,6 +513,22 @@ ipcMain.handle('templates:set', async (_e, list) => {
   }
 });
 
+ipcMain.handle('activities:get', async () => {
+  try {
+    return { ok: true, activities: await store.loadActivities() };
+  } catch (err) {
+    return { ok: false, activities: [], error: err.message };
+  }
+});
+
+ipcMain.handle('activities:set', async (_e, list) => {
+  try {
+    return { ok: true, activities: await store.saveActivities(list) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('theme:get', async () => {
   try {
     return { ok: true, theme: await store.getTheme() };
@@ -492,6 +540,22 @@ ipcMain.handle('theme:get', async () => {
 ipcMain.handle('theme:set', async (_e, theme) => {
   try {
     return { ok: true, theme: await store.setTheme(theme) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('accent:get', async () => {
+  try {
+    return { ok: true, accent: await store.getAccent() };
+  } catch (err) {
+    return { ok: false, accent: 'coral', error: err.message };
+  }
+});
+
+ipcMain.handle('accent:set', async (_e, accent) => {
+  try {
+    return { ok: true, accent: await store.setAccent(accent) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
