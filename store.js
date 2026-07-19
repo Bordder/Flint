@@ -112,6 +112,21 @@ async function addMedia(sourcePath) {
   if (encryptedOnDisk && !sessionDk) return { ok: false, error: 'Your journal is locked.' };
   const bytes = await fsp.readFile(sourcePath);
   if (bytes.length > MEDIA_MAX_BYTES) return { ok: false, error: 'That image is bigger than 20 MB.' };
+  // About to write a photo in the clear? Check the disk first, exactly as
+  // doSaveData does before writing plaintext words. If the in-memory flag has
+  // drifted and the journal on disk is really a vault, refuse rather than drop a
+  // readable image next to the encrypted words.
+  if (!encryptedOnDisk) {
+    const s = await peekVaultState();
+    if (s.state === 'vault') {
+      encryptedOnDisk = true;
+      sessionVault = s.vault;
+      return { ok: false, error: 'Your journal is encrypted, but Flint lost track of the key, so this photo was NOT saved and nothing on disk was touched. Close and reopen Flint, unlock it, and try again.' };
+    }
+    if (s.state === 'unknown') {
+      return { ok: false, error: `Your journal file could not be checked (${s.error}), so this photo was not saved. Please try again.` };
+    }
+  }
   await fsp.mkdir(P.mediaDir, { recursive: true });
   const id = crypto.randomBytes(12).toString('hex') + ext;
   const blob = encryptedOnDisk ? Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(sessionDk, bytes)]) : bytes;
@@ -1490,14 +1505,17 @@ function lock() {
 // can say so plainly instead of claiming success while readable journals remain.
 // Anything it cannot prove is a vault is treated as plaintext and removed: a
 // half-written or truncated copy still holds the words.
-async function purgePlaintextIn(dir, pattern) {
+async function purgePlaintextIn(dir, pattern, sweepTmp = true) {
   let left = 0;
   let names;
   try { names = await fsp.readdir(dir); } catch { return left; }
   for (const name of names) {
     // .tmp leftovers from an interrupted write hold the full plaintext journal
-    // and match no normal pattern, so nothing else would ever clear them.
-    const isTmp = name.endsWith('.tmp');
+    // and match no normal pattern, so nothing else would ever clear them. Callers
+    // that share a directory with OTHER atomic writers (the data root, where
+    // settings.json is written outside the save lock) pass sweepTmp:false so a
+    // concurrent foreign *.tmp is never unlinked mid-rename.
+    const isTmp = sweepTmp && name.endsWith('.tmp');
     if (!pattern.test(name) && !isTmp) continue;
     const full = path.join(dir, name);
     try {
@@ -1561,6 +1579,15 @@ function enableEncryption(pin) {
       const ext = await purgeExternalPlaintextBackups();
       if (ext.left) leftovers.push(`${ext.left} readable ${ext.left === 1 ? 'copy' : 'copies'} could not be removed from your backup folder`);
     } catch { leftovers.push('your backup folder could not be cleaned'); }
+    // The data root can hold an entries.json.corrupt-* copy set aside by loadData
+    // in the clear. purgePlaintextIn keeps the live vault and any file that is
+    // itself a vault, deleting only confirmed-plaintext copies. sweepTmp:false so a
+    // concurrent settings.json.tmp write (settings save runs off the lock) is never
+    // touched; a stale entries.json.tmp is already consumed by the vault write above.
+    try {
+      const left = await purgePlaintextIn(P.dataDir, /^entries\.json\.corrupt-/, false);
+      if (left) leftovers.push(`${left} readable ${left === 1 ? 'copy' : 'copies'} of your journal set aside earlier could not be removed`);
+    } catch { leftovers.push('a readable copy of your journal beside it could not be removed'); }
     try { await removePin(); } catch { /* the encryption PIN supersedes it anyway */ }
 
     return { ok: true, recoveryCode, leftovers };

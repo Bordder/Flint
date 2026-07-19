@@ -33,12 +33,12 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.4.1.exe
+   dist\Flint-Setup-1.4.2.exe
    ```
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.4.1.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.4.2.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -86,7 +86,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.4.1.exe SHA256
+certutil -hashfile Flint-Setup-1.4.2.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -166,7 +166,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.4.1.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.4.2.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is

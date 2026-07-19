@@ -676,6 +676,75 @@ async function main() {
     }
   });
 
+  await test('enableEncryption sweeps a readable copy left beside the journal, keeps an encrypted one', async () => {
+    const rootS = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-sweep-'));
+    const PS = store.init(rootS);
+    try {
+      await store.securityStatus();
+      const d = store.emptyData();
+      d.entries['2026-05-05'] = { note: 'readable copy that must not linger beside the vault' };
+      await store.saveData(d);
+
+      // Readable leftovers sitting in the data root beside the journal: a corrupt
+      // copy set aside by loadData and a half-written .tmp (both plaintext), plus a
+      // corrupt copy that is itself a vault and must be KEPT.
+      const plainCorrupt = path.join(PS.dataDir, 'entries.json.corrupt-20260101-000000-000');
+      const plainTmp = PS.dataFile + '.tmp';
+      const vaultCorrupt = path.join(PS.dataDir, 'entries.json.corrupt-20260101-000000-001');
+      // A foreign .tmp standing in for a concurrent settings write (which runs
+      // off the save lock): the sweep must NOT delete it.
+      const foreignTmp = path.join(PS.dataDir, 'keepme.tmp');
+      fs.writeFileSync(plainCorrupt, JSON.stringify(d));
+      fs.writeFileSync(plainTmp, JSON.stringify(d));
+      fs.writeFileSync(vaultCorrupt, JSON.stringify({ flintEncrypted: 1, kdf: 'scrypt', pin: 'x', recovery: 'x', body: 'x' }));
+      fs.writeFileSync(foreignTmp, 'a concurrent settings write in progress');
+
+      assert.ok((await store.enableEncryption('sweeppin')).ok, 'encryption turned on');
+
+      assert.ok(!fs.existsSync(plainCorrupt), 'the readable corrupt copy was removed');
+      assert.ok(!fs.existsSync(plainTmp), 'no readable entries .tmp lingers beside the vault');
+      assert.ok(fs.existsSync(vaultCorrupt), 'an already-encrypted corrupt copy was kept');
+      assert.ok(fs.existsSync(foreignTmp), 'a foreign .tmp (concurrent settings write) is left untouched');
+      assert.strictEqual(JSON.parse(fs.readFileSync(PS.dataFile, 'utf8')).flintEncrypted, 1, 'the live journal is a vault');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('addMedia refuses to write a cleartext photo over a drifted vault', async () => {
+    // Same disaster as the save guard, for attachments: a vault on disk while the
+    // in-memory flag still says plaintext must never yield a readable image.
+    const rootM = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-media-guard-'));
+    const PM = store.init(rootM);
+    try {
+      await store.securityStatus();
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('guardpin')).ok, 'encrypted');
+      const vaultBytes = fs.readFileSync(PM.dataFile);
+      assert.strictEqual((await store.disableEncryption('guardpin')).ok, true, 'back to plaintext');
+      assert.strictEqual((await store.securityStatus()).encrypted, false, 'app believes it is plaintext');
+
+      // A vault reappears underneath the app (a restore, a sync, a stale flag).
+      fs.writeFileSync(PM.dataFile, vaultBytes);
+
+      const src = path.join(os.tmpdir(), `flint-media-guard-${Date.now()}.png`);
+      fs.writeFileSync(src, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+      try {
+        const res = await store.addMedia(src);
+        assert.strictEqual(res.ok, false, 'the photo was refused');
+        assert.match(res.error, /lost track of the key/i, 'told to unlock and retry');
+        let mediaNames = [];
+        try { mediaNames = fs.readdirSync(PM.mediaDir); } catch { /* dir never created */ }
+        assert.strictEqual(mediaNames.length, 0, 'no image file was written beside the vault');
+        assert.strictEqual(JSON.parse(fs.readFileSync(PM.dataFile, 'utf8')).flintEncrypted, 1, 'the vault is untouched');
+      } finally {
+        fs.unlinkSync(src);
+      }
+    } finally {
+      store.init(root);
+    }
+  });
+
   await test('a vault written at the old cost still opens, and upgrades on unlock', async () => {
     const nodeCrypto = require('crypto');
     const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-legacy-'));
