@@ -36,6 +36,22 @@ Updates reach installed copies through GitHub releases. The app is configured to
 look at `Bordder/Flint` (`package.json`, `build` then `publish`); that repo must
 be public.
 
+Before you publish, make sure the build is sound:
+
+- `npm ci && npm test` pass (a clean install of the exact locked versions, then the
+  data-layer self-checks). Use `npm ci`, not `npm install`, so you ship what you tested.
+  These also run automatically on every push via GitHub Actions.
+- `npm run smoke:pdf` and `npm run smoke:updater` pass (the PDF export path, and that
+  the updater reaches GitHub without crossing the sealed writing window).
+- After `npm run dist`, `dist\` holds exactly three release files,
+  `Flint-Setup-<version>.exe`, its `.exe.blockmap`, and `latest.yml`, and `latest.yml`'s
+  `version` matches the exe. A missing or stale `latest.yml` or `.blockmap` silently
+  breaks auto-update for every existing user, so never skip this.
+- Note the version's changes for the release body (a committed `CHANGELOG.md` at the
+  repo root is worth starting, so the history survives outside the gitignored `dist`).
+
+Then:
+
 1. Bump `"version"` in `package.json`.
 2. Run `npm run dist`.
 3. Create a release at `https://github.com/Bordder/Flint/releases/new`, set the
@@ -56,7 +72,8 @@ the update check matches them. Every installed copy offers the update the next
 time it opens.
 
 **Faster alternative (uploads everything for you):** create a GitHub personal
-access token with `repo` permission, then run:
+access token (a fine-grained token scoped to just this repository's Contents and
+Releases is safest, since this token can push an update to every user), then run:
 
 ```
 set GH_TOKEN=your_token_here

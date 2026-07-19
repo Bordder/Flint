@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    # One grouped PR a month rather than a stream of individual ones.
+    groups:
+      dependencies:
+        patterns:
+          - "*"
