@@ -302,11 +302,33 @@ async function main() {
     assert.strictEqual(await store.setTheme('nonsense'), 'light', 'unknown value falls back to light');
   });
 
-  await test('theme accepts the preset palettes', async () => {
-    for (const t of ['sepia', 'soft-night', 'true-black']) {
+  await test('theme accepts the preset palettes and the custom key', async () => {
+    for (const t of ['sepia', 'nord', 'true-black', 'custom']) {
       assert.strictEqual(await store.setTheme(t), t, `${t} is accepted`);
     }
+    assert.strictEqual(await store.setTheme('soft-night'), 'light', 'a removed theme falls back to light');
     assert.strictEqual(await store.setTheme('light'), 'light');
+  });
+
+  await test('custom theme + presets validate and persist', async () => {
+    const saved = await store.setCustomTheme({ base: 'dark', primary: '#ff8800', accent: 'nope', junk: 1 });
+    assert.deepStrictEqual(saved, { base: 'dark', primary: '#ff8800', accent: '#bb9af7' }, 'bad hex falls back, junk dropped');
+    const presets = await store.setThemePresets([
+      { name: '  Sunset ', base: 'dark', primary: '#ff0000', accent: '#00ff00' },
+      { name: '', base: 'x', primary: 'y', accent: 'z' }
+    ]);
+    assert.strictEqual(presets.length, 1, 'nameless preset dropped');
+    assert.strictEqual(presets[0].name, 'Sunset');
+    const got = await store.getCustomTheme();
+    assert.strictEqual(got.custom.primary, '#ff8800');
+    assert.strictEqual(got.presets.length, 1);
+  });
+
+  await test('run-in-background defaults off, then persists', async () => {
+    assert.strictEqual(await store.getRunInBackground(), false, 'off by default');
+    assert.strictEqual(await store.setRunInBackground(true), true);
+    assert.strictEqual(await store.getRunInBackground(), true);
+    assert.strictEqual(await store.setRunInBackground(false), false);
   });
 
   await test('accent get/set persists and rejects unknowns', async () => {

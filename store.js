@@ -556,7 +556,7 @@ async function saveActivities(list) {
 
 // Theme preference: 'system' follows the OS (resolved to light or dark at
 // display time); the rest are full palettes the renderer applies directly.
-const THEME_CHOICES = ['light', 'dark', 'system', 'sepia', 'soft-night', 'true-black'];
+const THEME_CHOICES = ['light', 'dark', 'system', 'true-black', 'sepia', 'rose-pine-dawn', 'solarized-light', 'catppuccin-latte', 'nord', 'everforest', 'rose-pine', 'catppuccin-mocha', 'tokyo-night', 'gruvbox', 'custom'];
 function normaliseTheme(t) {
   return THEME_CHOICES.includes(t) ? t : 'light';
 }
@@ -590,6 +590,61 @@ async function setAccent(accent) {
   s.accent = normaliseAccent(accent);
   await saveSettings(s);
   return s.accent;
+}
+
+// The custom theme: a light or dark base plus two chosen colours, and any
+// number of saved named presets. Colours are validated as #rrggbb.
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
+function normaliseCustom(c) {
+  c = c && typeof c === 'object' ? c : {};
+  return {
+    base: c.base === 'dark' ? 'dark' : 'light',
+    primary: HEX6.test(c.primary) ? c.primary : '#7aa2f7',
+    accent: HEX6.test(c.accent) ? c.accent : '#bb9af7'
+  };
+}
+function normaliseThemePresets(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const p of list.slice(0, 12)) {
+    if (!p || typeof p.name !== 'string' || !p.name.trim()) continue;
+    out.push({
+      name: p.name.trim().slice(0, 30),
+      base: p.base === 'dark' ? 'dark' : 'light',
+      primary: HEX6.test(p.primary) ? p.primary : '#888888',
+      accent: HEX6.test(p.accent) ? p.accent : '#888888'
+    });
+  }
+  return out;
+}
+async function getCustomTheme() {
+  const s = await loadSettings();
+  return { custom: normaliseCustom(s.customTheme), presets: normaliseThemePresets(s.themePresets) };
+}
+async function setCustomTheme(custom) {
+  const s = await loadSettings();
+  s.customTheme = normaliseCustom(custom);
+  await saveSettings(s);
+  return s.customTheme;
+}
+async function setThemePresets(list) {
+  const s = await loadSettings();
+  s.themePresets = normaliseThemePresets(list);
+  await saveSettings(s);
+  return s.themePresets;
+}
+
+// Whether Flint keeps running in the tray (and starts with Windows) so daily
+// reminders can reach the user when the window is closed. Off by default.
+async function getRunInBackground() {
+  const s = await loadSettings();
+  return s.runInBackground === true;
+}
+async function setRunInBackground(on) {
+  const s = await loadSettings();
+  s.runInBackground = Boolean(on);
+  await saveSettings(s);
+  return s.runInBackground;
 }
 
 // An optional local nudge to write, off by default. The time is 24 hour HH:MM.
@@ -1687,7 +1742,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

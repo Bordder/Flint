@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, BrowserWindow, Menu, ipcMain, dialog, session, shell, clipboard, Notification
+  app, BrowserWindow, Menu, ipcMain, dialog, session, shell, clipboard, Notification, Tray, nativeImage
 } = require('electron');
 const path = require('path');
 const url = require('url');
@@ -38,6 +38,10 @@ const paths = store.init(dataRoot);
 let win = null;
 let allowClose = false;
 let closing = false;
+let tray = null;
+let quitting = false;          // set when the user really means to quit (tray menu / update install)
+let backgroundActive = false;  // true when "keep in the tray" is on
+const startHidden = process.argv.includes('--hidden'); // login-item launches with this
 
 // Only one copy of the app may run, two windows writing one file is how
 // journals get corrupted.
@@ -47,6 +51,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (win) {
       if (win.isMinimized()) win.restore();
+      win.show(); // it may be hidden in the tray, not just minimised
       win.focus();
     }
   });
@@ -58,6 +63,7 @@ if (!app.requestSingleInstanceLock()) {
     // text fields, and Ctrl+S to save is handled in the renderer.
     Menu.setApplicationMenu(null);
     createWindow();
+    applyBackgroundMode();
     setupUpdates();
     setInterval(checkReminder, 60 * 1000);
     setTimeout(maybeBackup, 10 * 1000);
@@ -118,6 +124,44 @@ async function checkReminder() {
     notif.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
     notif.show();
   } catch { /* never let a reminder break the app */ }
+}
+
+// ------------------------------------------------------ tray / background
+//
+// Optional: keep Flint in the tray (and start it with Windows) so the daily
+// reminder can reach the user even when the window is closed. Off by default;
+// none of this runs unless the user turns it on in Settings.
+function showWindow() {
+  if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+  else createWindow();
+}
+function ensureTray() {
+  if (tray) return;
+  try {
+    const img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.ico'));
+    tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
+    tray.setToolTip('Flint');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Flint', click: showWindow },
+      { type: 'separator' },
+      { label: 'Quit Flint', click: () => { quitting = true; if (win && !win.isDestroyed()) win.close(); else app.quit(); } }
+    ]));
+    tray.on('click', showWindow);
+    tray.on('double-click', showWindow);
+  } catch { /* a tray is a nicety; never let it break startup */ }
+}
+function destroyTray() {
+  if (tray) { try { tray.destroy(); } catch { /* already gone */ } tray = null; }
+}
+async function applyBackgroundMode() {
+  let on = false;
+  try { on = await store.getRunInBackground(); } catch { on = false; }
+  backgroundActive = on;
+  if (on) ensureTray(); else destroyTray();
+  try { app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] }); } catch { /* best effort */ }
+  // Safety net: never sit hidden with no tray to reach (e.g. a stale --hidden
+  // launch after background was turned off). If we are not in the tray, show.
+  if (!on && win && !win.isDestroyed() && !win.isVisible()) win.show();
 }
 
 // ------------------------------------------------------------- auto-update
@@ -205,12 +249,20 @@ function lockDownNetwork() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 880, height: 940, minWidth: 380, minHeight: 520, backgroundColor: '#f7f2e9', show: false, webPreferences: {
+    width: 880, height: 940, minWidth: 380, minHeight: 520, backgroundColor: '#f7f2e9', show: false,
+    frame: false, // Flint draws its own title bar (the top bar) and window buttons
+    webPreferences: {
       preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false // Electron's spellchecker downloads dictionaries; keep everything offline
     }
   });
 
-  win.once('ready-to-show', () => win.show());
+  // Tell the renderer when the window is maximised so the button can show the
+  // right icon. The controls themselves route back through the IPC handlers.
+  const sendMaxState = () => { if (win && !win.isDestroyed()) win.webContents.send('window:max-state', win.isMaximized()); };
+  win.on('maximize', sendMaxState);
+  win.on('unmaximize', sendMaxState);
+
+  win.once('ready-to-show', () => { if (!startHidden) win.show(); });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -241,6 +293,9 @@ function createWindow() {
   // the timeout is treated as dirty, the safe direction.
   win.on('close', (e) => {
     if (allowClose) return;
+    // "Keep in the tray" is on: closing the window just hides it (the words on
+    // the page are kept in memory), so no save prompt and the app stays alive.
+    if (backgroundActive && !quitting) { e.preventDefault(); win.hide(); return; }
     e.preventDefault();
     if (closing) return;
     closing = true;
@@ -256,6 +311,10 @@ function createWindow() {
           type: 'question', message: 'You have unsaved words on the page.', buttons: ['Save and close', 'Close without saving', 'Keep writing'], defaultId: 0, cancelId: 2, noLink: true
         });
         closing = false;
+        // A resolved dialog spends any tray-quit intent; the real close below
+        // uses allowClose, so quitting must not stay stuck (it would break
+        // close-to-tray for the rest of the session).
+        quitting = false;
         if (response === 0) {
           // The renderer saves, then tells us to close (or shows its own
           // error and cancels the close if the save fails).
@@ -267,6 +326,7 @@ function createWindow() {
       })
       .catch(() => {
         closing = false;
+        quitting = false;
       });
   });
 
@@ -561,6 +621,46 @@ ipcMain.handle('accent:set', async (_e, accent) => {
   }
 });
 
+ipcMain.handle('custom:get', async () => {
+  try {
+    const { custom, presets } = await store.getCustomTheme();
+    return { ok: true, custom, presets };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('custom:set', async (_e, custom) => {
+  try {
+    return { ok: true, custom: await store.setCustomTheme(custom) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('theme-presets:set', async (_e, list) => {
+  try {
+    return { ok: true, presets: await store.setThemePresets(list) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Custom title-bar window controls. Close routes through the normal close, so
+// the unsaved-words guard still runs.
+ipcMain.handle('window:minimize', () => { if (win) win.minimize(); });
+ipcMain.handle('window:maximize', () => { if (win) { if (win.isMaximized()) win.unmaximize(); else win.maximize(); } });
+ipcMain.handle('window:close', () => { if (win) win.close(); });
+
+ipcMain.handle('background:get', async () => {
+  try { return { ok: true, enabled: await store.getRunInBackground() }; }
+  catch (err) { return { ok: false, enabled: false, error: err.message }; }
+});
+ipcMain.handle('background:set', async (_e, on) => {
+  try { const enabled = await store.setRunInBackground(on); await applyBackgroundMode(); return { ok: true, enabled }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
 ipcMain.handle('guided:get', async () => {
   try {
     return { ok: true, guided: await store.getGuided() };
@@ -820,9 +920,13 @@ ipcMain.handle('app:open-data-folder', async () => {
 ipcMain.handle('app:reset-all', async () => {
   try {
     const res = await store.resetAll();
-    if (res.ok && win && !win.isDestroyed()) {
-      // Come back up as a brand-new install: reload so onboarding runs again.
-      setImmediate(() => { if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache(); });
+    if (res.ok) {
+      // Reset wipes settings, so background mode is off again: drop the tray and
+      // the start-with-Windows entry, then come back up as a fresh install.
+      await applyBackgroundMode();
+      if (win && !win.isDestroyed()) {
+        setImmediate(() => { if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache(); });
+      }
     }
     return res;
   } catch (err) {

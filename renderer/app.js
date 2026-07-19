@@ -1241,48 +1241,56 @@ async function retryLoad() {
 
 const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
 let themePref = 'light';
-let accentPref = 'coral';
-const THEME_KEYS = ['light', 'dark', 'system', 'sepia', 'soft-night', 'true-black'];
-const DARK_THEMES = ['dark', 'soft-night', 'true-black'];
-const ACCENT_KEYS = ['coral', 'sage', 'amber', 'blue', 'plum', 'rose'];
+let customTheme = { base: 'dark', primary: '#7aa2f7', accent: '#bb9af7' };
+let themePresets = [];
+const THEME_KEYS = ['system', 'light', 'dark', 'true-black', 'sepia', 'rose-pine-dawn', 'solarized-light', 'catppuccin-latte', 'nord', 'everforest', 'rose-pine', 'catppuccin-mocha', 'tokyo-night', 'gruvbox'];
+const DARK_THEMES = ['dark', 'true-black', 'nord', 'everforest', 'rose-pine', 'catppuccin-mocha', 'tokyo-night', 'gruvbox'];
 
-// Swatch previews (approximate the token palettes) so a choice can be seen
-// before it is applied. Three swatches: background, ink, accent.
+// Swatch previews (background, ink, accent) so a theme can be seen before use.
 const THEME_META = [
+  { key: 'system', label: 'System', sw: ['#faf7f2', '#2a2621', '#bd6a34'] },
   { key: 'light', label: 'Light', sw: ['#faf7f2', '#3a352d', '#bd6a34'] },
   { key: 'dark', label: 'Dark', sw: ['#2a2621', '#e9e4dc', '#e0915a'] },
-  { key: 'sepia', label: 'Paper', sw: ['#efe6d4', '#3a3025', '#bd6a34'] },
-  { key: 'soft-night', label: 'Soft night', sw: ['#211d18', '#e5e0d8', '#e0915a'] },
-  { key: 'true-black', label: 'True black', sw: ['#000000', '#f2ede6', '#eda06a'] },
-  { key: 'system', label: 'System', sw: ['#faf7f2', '#2a2621', '#bd6a34'] }
-];
-const ACCENT_META = [
-  { key: 'coral', label: 'Coral', color: '#bd6a34' },
-  { key: 'sage', label: 'Sage', color: '#5f7d55' },
-  { key: 'amber', label: 'Amber', color: '#9c7320' },
-  { key: 'blue', label: 'Blue', color: '#4f6f97' },
-  { key: 'plum', label: 'Plum', color: '#8a5a86' },
-  { key: 'rose', label: 'Rose', color: '#b1566a' }
+  { key: 'true-black', label: 'True black', sw: ['#000000', '#f2ede6', '#e0915a'] },
+  { key: 'sepia', label: 'Sepia', sw: ['#f4ecd8', '#5b4636', '#a5612b'] },
+  { key: 'rose-pine-dawn', label: 'Rosé Pine Dawn', sw: ['#faf4ed', '#575279', '#a8455f'] },
+  { key: 'solarized-light', label: 'Solarized Light', sw: ['#fdf6e3', '#4e6469', '#1c6fb0'] },
+  { key: 'catppuccin-latte', label: 'Catppuccin Latte', sw: ['#eff1f5', '#4c4f69', '#7a2fe0'] },
+  { key: 'nord', label: 'Nord', sw: ['#2e3440', '#e5e9f0', '#88c0d0'] },
+  { key: 'everforest', label: 'Everforest', sw: ['#2d353b', '#d3c6aa', '#a7c080'] },
+  { key: 'rose-pine', label: 'Rosé Pine', sw: ['#191724', '#e0def4', '#ebbcba'] },
+  { key: 'catppuccin-mocha', label: 'Catppuccin Mocha', sw: ['#1e1e2e', '#cdd6f4', '#cba6f7'] },
+  { key: 'tokyo-night', label: 'Tokyo Night', sw: ['#1a1b26', '#c0caf5', '#7aa2f7'] },
+  { key: 'gruvbox', label: 'Gruvbox', sw: ['#282828', '#ebdbb2', '#fe8019'] }
 ];
 
 function resolveTheme(pref) {
   if (pref === 'system') return darkMedia.matches ? 'dark' : 'light';
   return (THEME_KEYS.includes(pref) && pref !== 'system') ? pref : 'light';
 }
-function applyTheme(pref) {
-  themePref = THEME_KEYS.includes(pref) ? pref : 'light';
-  const resolved = resolveTheme(themePref);
-  const root = document.documentElement;
-  root.dataset.theme = resolved;
-  root.dataset.mode = DARK_THEMES.includes(resolved) ? 'dark' : 'light';
-  syncThemeChoice();
+// Ink that stays readable on a chosen colour: dark text on light colours, else white.
+function readableInk(hex) {
+  const c = String(hex).replace('#', ''); if (c.length < 6) return '#ffffff';
+  const r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#1a1a1a' : '#ffffff';
 }
-function applyAccent(accent) {
-  accentPref = ACCENT_KEYS.includes(accent) ? accent : 'coral';
+function applyTheme(pref) {
+  themePref = (THEME_KEYS.includes(pref) || pref === 'custom') ? pref : 'light';
   const root = document.documentElement;
-  if (accentPref === 'coral') delete root.dataset.accent; // coral is the built-in default
-  else root.dataset.accent = accentPref;
-  syncAccentChoice();
+  if (themePref === 'custom') {
+    const base = customTheme.base === 'dark' ? 'dark' : 'light';
+    root.dataset.theme = base; root.dataset.mode = base; root.dataset.accent = 'custom';
+    root.style.setProperty('--accent', customTheme.primary);
+    root.style.setProperty('--accent-2', customTheme.accent);
+    root.style.setProperty('--accent-ink', readableInk(customTheme.primary));
+  } else {
+    const resolved = resolveTheme(themePref);
+    root.dataset.theme = resolved;
+    root.dataset.mode = DARK_THEMES.includes(resolved) ? 'dark' : 'light';
+    delete root.dataset.accent;
+    root.style.removeProperty('--accent'); root.style.removeProperty('--accent-2'); root.style.removeProperty('--accent-ink');
+  }
+  syncThemeChoice();
 }
 function buildThemeChoices() {
   const box = $('theme-choice'); if (!box) return;
@@ -1298,35 +1306,79 @@ function buildThemeChoices() {
   }
   syncThemeChoice();
 }
-function buildAccentChoices() {
-  const box = $('accent-choice'); if (!box) return;
-  box.textContent = '';
-  for (const a of ACCENT_META) {
-    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'accent-opt'; btn.dataset.accent = a.key;
-    btn.setAttribute('aria-pressed', 'false'); btn.title = a.label; btn.setAttribute('aria-label', a.label);
-    const dot = document.createElement('span'); dot.className = 'accent-dot'; dot.style.background = a.color; dot.setAttribute('aria-hidden', 'true');
-    btn.append(dot);
-    btn.addEventListener('click', () => setAccentPref(a.key));
-    box.append(btn);
-  }
-  syncAccentChoice();
-}
 function syncThemeChoice() {
   for (const btn of document.querySelectorAll('.theme-opt')) {
     const on = btn.dataset.themePref === themePref;
     btn.classList.toggle('is-selected', on);
     btn.setAttribute('aria-pressed', String(on));
   }
-}
-function syncAccentChoice() {
-  for (const btn of document.querySelectorAll('.accent-opt')) {
-    const on = btn.dataset.accent === accentPref;
-    btn.classList.toggle('is-selected', on);
-    btn.setAttribute('aria-pressed', String(on));
-  }
+  const cust = $('custom-section'); if (cust) cust.classList.toggle('is-active', themePref === 'custom');
 }
 async function setThemePref(pref) { applyTheme(pref); await safeCall(api.setTheme, pref); }
-async function setAccentPref(accent) { applyAccent(accent); await safeCall(api.setAccent, accent); }
+
+/* custom theme builder (base + two colours, savable as named presets) */
+function initCustomControls() {
+  const prim = $('custom-primary'), acc = $('custom-accent');
+  if (!prim || !acc) return;
+  prim.value = customTheme.primary; acc.value = customTheme.accent;
+  syncCustomBase();
+  for (const b of document.querySelectorAll('#custom-base .seg-btn')) {
+    b.addEventListener('click', () => { customTheme.base = b.dataset.base === 'dark' ? 'dark' : 'light'; syncCustomBase(); persistCustom(); });
+  }
+  const preview = () => { customTheme.primary = prim.value; customTheme.accent = acc.value; applyTheme('custom'); };
+  prim.addEventListener('input', preview); acc.addEventListener('input', preview);
+  prim.addEventListener('change', persistCustom); acc.addEventListener('change', persistCustom);
+  $('custom-save').addEventListener('click', saveThemePreset);
+  renderThemePresets();
+}
+function syncCustomBase() {
+  for (const b of document.querySelectorAll('#custom-base .seg-btn')) {
+    const on = b.dataset.base === customTheme.base;
+    b.classList.toggle('is-on', on); b.setAttribute('aria-pressed', String(on));
+  }
+}
+async function persistCustom() {
+  applyTheme('custom');
+  await safeCall(api.setTheme, 'custom');
+  await safeCall(api.setCustom, customTheme);
+}
+async function saveThemePreset() {
+  const nameEl = $('custom-name');
+  const name = ((nameEl && nameEl.value) || '').trim().slice(0, 30) || 'My theme';
+  themePresets = [...themePresets.filter((p) => p.name !== name), { name, base: customTheme.base, primary: customTheme.primary, accent: customTheme.accent }].slice(-12);
+  if (nameEl) nameEl.value = '';
+  const res = await safeCall(api.setThemePresets, themePresets);
+  if (res.ok && Array.isArray(res.presets)) themePresets = res.presets;
+  renderThemePresets();
+}
+function renderThemePresets() {
+  const box = $('theme-presets'); if (!box) return;
+  box.textContent = '';
+  themePresets.forEach((p) => {
+    const chip = document.createElement('div'); chip.className = 'preset-chip';
+    const use = document.createElement('button'); use.type = 'button'; use.className = 'preset-use'; use.title = `${p.name} (${p.base})`;
+    const sw = document.createElement('span'); sw.className = 'preset-sw'; sw.style.background = p.base === 'dark' ? '#222' : '#f4f0e8';
+    const dot = document.createElement('span'); dot.className = 'preset-sw-dot'; dot.style.background = p.primary;
+    sw.append(dot);
+    const nm = document.createElement('span'); nm.className = 'preset-name'; nm.textContent = p.name;
+    use.append(sw, nm);
+    use.addEventListener('click', () => {
+      customTheme = { base: p.base, primary: p.primary, accent: p.accent };
+      if ($('custom-primary')) $('custom-primary').value = p.primary;
+      if ($('custom-accent')) $('custom-accent').value = p.accent;
+      syncCustomBase(); persistCustom();
+    });
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'preset-del'; del.textContent = '×'; del.setAttribute('aria-label', `Delete ${p.name}`);
+    del.addEventListener('click', async () => {
+      themePresets = themePresets.filter((x) => x !== p);
+      const r = await safeCall(api.setThemePresets, themePresets);
+      if (r.ok && Array.isArray(r.presets)) themePresets = r.presets;
+      renderThemePresets();
+    });
+    chip.append(use, del); box.append(chip);
+  });
+}
+
 function wireThemeChoice(container) {
   if (!container) return;
   for (const btn of container.querySelectorAll('.theme-opt')) {
@@ -2526,9 +2578,19 @@ async function sendFeedback() {
 
 async function init() {
   const themeRes = await safeCall(api.getTheme);
+  const customRes = await safeCall(api.getCustom);
+  if (customRes.ok) { if (customRes.custom) customTheme = customRes.custom; if (Array.isArray(customRes.presets)) themePresets = customRes.presets; }
   applyTheme(themeRes.ok ? themeRes.theme : 'light');
-  const accentRes = await safeCall(api.getAccent);
-  applyAccent(accentRes.ok ? accentRes.accent : 'coral');
+
+  // Custom title-bar window controls, wired early so they also work on the lock
+  // gate and onboarding (which appear before the rest of init runs).
+  const wireWin = (id, fn) => { const el = $(id); if (el) el.addEventListener('click', fn); };
+  wireWin('win-min', () => api.minimizeWindow && api.minimizeWindow());
+  wireWin('win-max', () => api.maximizeWindow && api.maximizeWindow());
+  wireWin('win-close', () => api.closeWindow && api.closeWindow());
+  wireWin('gate-close', () => api.closeWindow && api.closeWindow());
+  wireWin('onboard-close', () => api.closeWindow && api.closeWindow());
+  if (api.onWindowMaxState) api.onWindowMaxState((m) => document.body.classList.toggle('is-maximized', m));
 
   // Wire the lock gate and onboarding once; each is driven by a promise below.
   $('pin-form').addEventListener('submit', onGateSubmit);
@@ -2583,6 +2645,8 @@ async function init() {
     $('reminder-time').value = remRes.reminder.time;
     $('reminder-time').disabled = !remRes.reminder.enabled;
   }
+  const bgRes = await safeCall(api.getRunInBackground);
+  if (bgRes.ok && $('background-toggle')) $('background-toggle').checked = bgRes.enabled;
 
   // startedOn (stamped by finishOnboarding) drives the gentle starter-week hint.
   const startRes = await safeCall(api.getStartedOn);
@@ -2661,10 +2725,16 @@ async function init() {
 
   // settings panel controls
   buildThemeChoices();
-  buildAccentChoices();
+  initCustomControls();
   $('guided-toggle').addEventListener('change', () => setGuidedMode($('guided-toggle').checked));
   $('reminder-toggle').addEventListener('change', saveReminder);
   $('reminder-time').addEventListener('change', saveReminder);
+  $('background-toggle').addEventListener('change', async () => {
+    const on = $('background-toggle').checked;
+    const res = await safeCall(api.setRunInBackground, on);
+    const st = $('background-status');
+    if (st) st.textContent = res.ok ? (on ? 'Flint will keep running in the tray and start with Windows.' : 'Flint will fully close when you close the window.') : 'That could not be changed.';
+  });
   $('backup-toggle').addEventListener('change', () => saveBackupCfg({ ...backupCfg, enabled: $('backup-toggle').checked }));
   $('backup-choose-btn').addEventListener('click', async () => {
     // Main picks and stores the folder itself; we only get back the result.

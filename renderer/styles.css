@@ -114,123 +114,58 @@
   --shadow-raised:  0 10px 34px oklch(0% 0 0 / 0.5);
 }
 
-/* Paper / sepia: a warm cream "book" light theme (light family). */
-:root[data-theme="sepia"] {
-  --paper:        oklch(94.5% 0.022 78);
-  --paper-2:      oklch(97% 0.018 78);
-  --paper-3:      oklch(91% 0.03 78);
-  --ink:          oklch(30% 0.02 55);
-  --ink-2:        oklch(44% 0.022 55);
-  --ink-3:        oklch(50% 0.022 55);
-  --rule:         oklch(86% 0.03 76);
-  --control-border: oklch(60% 0.03 60);
-  /* darker default accent so accent-coloured text clears AA on the cream paper */
-  --accent:       oklch(52% 0.12 45);
-  --accent-2:     oklch(47% 0.125 43);
-  --accent-ink:   oklch(99% 0.01 74);
-  --accent-soft:  oklch(90% 0.035 55);
-  --accent-line:  oklch(80% 0.055 50);
-  --focus:        oklch(50% 0.14 45);
-  --mark:         oklch(88% 0.1 90);
-  --mark-ink:     oklch(30% 0.03 70);
-  --notice-bg:    oklch(92% 0.05 92);
-  --notice-line:  oklch(82% 0.08 92);
-  --badge-good:   oklch(90% 0.06 150);
-  --badge-mixed:  oklch(91% 0.07 85);
-  --badge-hard:   oklch(90% 0.06 30);
-  --badge-ink:    oklch(34% 0.03 60);
-  --shadow-whisper: 0 1px 2px oklch(40% 0.03 60 / 0.06), 0 4px 16px oklch(40% 0.03 60 / 0.05);
-  --shadow-raised:  0 8px 30px oklch(40% 0.03 60 / 0.14);
+/* == Theme presets ========================================================
+   Light and Dark (the neutral bases) are above. Below are complete named
+   palettes; each sets ~11 core colours and the shared rule derives the rest
+   (tints, borders, badges, shadows) from them via color-mix, so the whole set
+   stays consistent. */
+
+/* Light-family palettes */
+:root[data-theme="sepia"]            { --paper:#f4ecd8; --paper-2:#fbf3df; --ink:#5b4636; --ink-3:#6e5c45; --rule:#e4d8bd; --accent:#984f1f; --accent-2:#6f7d4f; --accent-ink:#ffffff; --good:#5a7539; --danger:#a5432f; --mark:#e6c15c; --mark-ink:#4a3826; }
+:root[data-theme="rose-pine-dawn"]   { --paper:#faf4ed; --paper-2:#fffaf3; --ink:#575279; --ink-3:#6a6685; --rule:#dfdad9; --accent:#a8455f; --accent-2:#8058a0; --accent-ink:#ffffff; --good:#286983; --danger:#b4637a; --mark:#d08a1f; --mark-ink:#575279; }
+:root[data-theme="solarized-light"]  { --paper:#fdf6e3; --paper-2:#eee8d5; --ink:#4e6469; --ink-3:#5f7375; --rule:#e3dcc9; --accent:#1c6fb0; --accent-2:#218a80; --accent-ink:#ffffff; --good:#728a00; --danger:#dc322f; --mark:#b58900; --mark-ink:#3a4d50; }
+:root[data-theme="catppuccin-latte"] { --paper:#eff1f5; --paper-2:#e6e9ef; --ink:#4c4f69; --ink-3:#5c5f74; --rule:#ccd0da; --accent:#7a2fe0; --accent-2:#1a5fe0; --accent-ink:#ffffff; --good:#3a9426; --danger:#d20f39; --mark:#c47d16; --mark-ink:#eff1f5; }
+
+/* Dark-family palettes */
+:root[data-theme="nord"]             { --paper:#2e3440; --paper-2:#3b4252; --ink:#e5e9f0; --ink-3:#93a0b5; --rule:#434c5e; --accent:#88c0d0; --accent-2:#81a1c1; --accent-ink:#2e3440; --good:#a3be8c; --danger:#bf616a; --mark:#ebcb8b; --mark-ink:#2e3440; }
+:root[data-theme="everforest"]       { --paper:#2d353b; --paper-2:#343f44; --ink:#d3c6aa; --ink-3:#9aa79d; --rule:#3d484d; --accent:#a7c080; --accent-2:#83c092; --accent-ink:#2d353b; --good:#a7c080; --danger:#e67e80; --mark:#dbbc7f; --mark-ink:#2d353b; }
+:root[data-theme="rose-pine"]        { --paper:#191724; --paper-2:#1f1d2e; --ink:#e0def4; --ink-3:#a29dbd; --rule:#26233a; --accent:#ebbcba; --accent-2:#c4a7e7; --accent-ink:#191724; --good:#9ccfd8; --danger:#eb6f92; --mark:#f6c177; --mark-ink:#191724; }
+:root[data-theme="catppuccin-mocha"] { --paper:#1e1e2e; --paper-2:#313244; --ink:#cdd6f4; --ink-3:#a6adc8; --rule:#45475a; --accent:#cba6f7; --accent-2:#89b4fa; --accent-ink:#1e1e2e; --good:#a6e3a1; --danger:#f38ba8; --mark:#f9e2af; --mark-ink:#1e1e2e; }
+:root[data-theme="tokyo-night"]      { --paper:#1a1b26; --paper-2:#24283b; --ink:#c0caf5; --ink-3:#9098c0; --rule:#292e42; --accent:#7aa2f7; --accent-2:#bb9af7; --accent-ink:#1a1b26; --good:#9ece6a; --danger:#f7768e; --mark:#e0af68; --mark-ink:#1a1b26; }
+:root[data-theme="gruvbox"]          { --paper:#282828; --paper-2:#3c3836; --ink:#ebdbb2; --ink-3:#b0a084; --rule:#504945; --accent:#fe8019; --accent-2:#8ec07c; --accent-ink:#282828; --good:#b8bb26; --danger:#fb4934; --mark:#fabd2f; --mark-ink:#282828; }
+:root[data-theme="true-black"]       { --paper:#000000; --paper-2:#141414; --ink:#f2ede6; --ink-3:#8f8f8f; --rule:#2a2a2a; --accent:#e0915a; --accent-2:#e6b45a; --accent-ink:#141414; --good:#7ec27e; --danger:#e07a6a; --mark:#e6c060; --mark-ink:#141414; }
+
+/* Shared derivation for every palette above. */
+:root[data-theme="sepia"], :root[data-theme="rose-pine-dawn"], :root[data-theme="solarized-light"],
+:root[data-theme="catppuccin-latte"], :root[data-theme="nord"], :root[data-theme="everforest"],
+:root[data-theme="rose-pine"], :root[data-theme="catppuccin-mocha"], :root[data-theme="tokyo-night"],
+:root[data-theme="gruvbox"], :root[data-theme="true-black"] {
+  --paper-3:        color-mix(in oklab, var(--ink) 8%, var(--paper));
+  --ink-2:          color-mix(in oklab, var(--ink) 58%, var(--ink-3));
+  --control-border: color-mix(in oklab, var(--ink) 42%, var(--paper));
+  --accent-soft:    color-mix(in oklab, var(--accent) 15%, var(--paper));
+  --accent-line:    color-mix(in oklab, var(--accent) 32%, var(--paper));
+  --focus:          var(--accent);
+  --danger-border:  color-mix(in oklab, var(--danger) 55%, var(--paper));
+  --danger-soft:    color-mix(in oklab, var(--danger) 16%, var(--paper));
+  --notice-bg:      color-mix(in oklab, var(--mark) 18%, var(--paper));
+  --notice-line:    color-mix(in oklab, var(--mark) 40%, var(--paper));
+  --badge-good:     color-mix(in oklab, var(--good) 26%, var(--paper));
+  --badge-mixed:    color-mix(in oklab, var(--mark) 26%, var(--paper));
+  --badge-hard:     color-mix(in oklab, var(--danger) 26%, var(--paper));
+  --badge-ink:      var(--ink);
+  --shadow-whisper: 0 1px 2px rgba(0,0,0,0.14), 0 6px 22px rgba(0,0,0,0.12);
+  --shadow-raised:  0 10px 34px rgba(0,0,0,0.24);
 }
 
-/* Soft night: a warm, low-glare dark theme (dark family). */
-:root[data-theme="soft-night"] {
-  --paper:        oklch(18% 0.012 66);
-  --paper-2:      oklch(22% 0.013 66);
-  --paper-3:      oklch(26% 0.014 66);
-  --ink:          oklch(91% 0.01 74);
-  --ink-2:        oklch(77% 0.012 72);
-  --ink-3:        oklch(70% 0.014 72);
-  --rule:         oklch(32% 0.014 66);
-  --control-border: oklch(56% 0.016 66);
-  --accent:       oklch(70% 0.12 48);
-  --accent-2:     oklch(75% 0.13 50);
-  --accent-ink:   oklch(22% 0.03 60);
-  --accent-soft:  oklch(30% 0.04 50);
-  --accent-line:  oklch(40% 0.06 50);
-  --focus:        oklch(76% 0.13 50);
-  --good:         oklch(78% 0.11 150);
-  --danger:       oklch(75% 0.13 30);
-  --danger-border: oklch(50% 0.1 30);
-  --danger-soft:  oklch(30% 0.05 30);
-  --mark:         oklch(50% 0.1 90);
-  --mark-ink:     oklch(96% 0.02 90);
-  --notice-bg:    oklch(32% 0.05 92);
-  --notice-line:  oklch(46% 0.07 92);
-  --badge-good:   oklch(36% 0.06 150);
-  --badge-mixed:  oklch(38% 0.06 85);
-  --badge-hard:   oklch(36% 0.06 30);
-  --badge-ink:    oklch(92% 0.02 74);
-  --shadow-whisper: 0 1px 2px oklch(0% 0 0 / 0.35), 0 6px 22px oklch(0% 0 0 / 0.3);
-  --shadow-raised:  0 10px 34px oklch(0% 0 0 / 0.55);
-}
-
-/* True black: pure-black OLED theme (dark family). */
-:root[data-theme="true-black"] {
-  --paper:        oklch(0% 0 0);
-  --paper-2:      oklch(16% 0.006 66);
-  --paper-3:      oklch(22% 0.008 66);
-  --ink:          oklch(96% 0.006 74);
-  --ink-2:        oklch(80% 0.01 72);
-  --ink-3:        oklch(70% 0.012 72);
-  --rule:         oklch(30% 0.01 66);
-  --control-border: oklch(58% 0.014 66);
-  --accent:       oklch(72% 0.13 50);
-  --accent-2:     oklch(78% 0.14 52);
-  --accent-ink:   oklch(18% 0.03 60);
-  --accent-soft:  oklch(26% 0.05 50);
-  --accent-line:  oklch(38% 0.07 50);
-  --focus:        oklch(80% 0.13 50);
-  --good:         oklch(80% 0.11 150);
-  --danger:       oklch(76% 0.13 30);
-  --danger-border: oklch(52% 0.1 30);
-  --danger-soft:  oklch(26% 0.05 30);
-  --mark:         oklch(52% 0.11 90);
-  --mark-ink:     oklch(97% 0.02 90);
-  --notice-bg:    oklch(28% 0.05 92);
-  --notice-line:  oklch(44% 0.07 92);
-  --badge-good:   oklch(34% 0.06 150);
-  --badge-mixed:  oklch(36% 0.06 85);
-  --badge-hard:   oklch(34% 0.06 30);
-  --badge-ink:    oklch(94% 0.02 74);
-  --shadow-whisper: 0 1px 2px oklch(0% 0 0 / 0.6), 0 6px 22px oklch(0% 0 0 / 0.5);
-  --shadow-raised:  0 10px 34px oklch(0% 0 0 / 0.7);
-}
-
-/* Accent colour, a separate axis from light/dark. 'coral' is the built-in
-   default (no data-accent). The rest recolour only the accent tokens; the soft
-   tint and edge are mixed against the current paper so they suit any theme. */
-:root[data-accent] {
-  --accent-soft: color-mix(in oklab, var(--accent) 16%, var(--paper));
-  --accent-line: color-mix(in oklab, var(--accent) 34%, var(--paper));
+/* Custom theme: neutrals come from the chosen light/dark base; the two chosen
+   colours are set inline on <html> as --accent / --accent-2 (+ --accent-ink),
+   and the tints derive from them here. */
+:root[data-accent="custom"] {
+  --accent-soft: color-mix(in oklab, var(--accent) 15%, var(--paper));
+  --accent-line: color-mix(in oklab, var(--accent) 32%, var(--paper));
   --focus: var(--accent);
 }
-:root[data-mode="light"][data-accent="sage"]  { --accent: oklch(50% 0.085 150); --accent-2: oklch(45% 0.09 150);  --accent-ink: oklch(99% 0.01 150); }
-:root[data-mode="dark"][data-accent="sage"]   { --accent: oklch(74% 0.11 150);  --accent-2: oklch(80% 0.12 150);  --accent-ink: oklch(22% 0.03 150); }
-:root[data-mode="light"][data-accent="amber"] { --accent: oklch(54% 0.11 72);   --accent-2: oklch(48% 0.115 70);  --accent-ink: oklch(99% 0.01 80); }
-:root[data-mode="dark"][data-accent="amber"]  { --accent: oklch(78% 0.12 75);   --accent-2: oklch(84% 0.13 75);   --accent-ink: oklch(24% 0.04 70); }
-:root[data-mode="light"][data-accent="blue"]  { --accent: oklch(54% 0.11 250);  --accent-2: oklch(48% 0.115 250); --accent-ink: oklch(99% 0.01 250); }
-:root[data-mode="dark"][data-accent="blue"]   { --accent: oklch(73% 0.11 250);  --accent-2: oklch(79% 0.12 250);  --accent-ink: oklch(22% 0.03 250); }
-:root[data-mode="light"][data-accent="plum"]  { --accent: oklch(50% 0.12 330);  --accent-2: oklch(45% 0.125 330); --accent-ink: oklch(99% 0.01 330); }
-:root[data-mode="dark"][data-accent="plum"]   { --accent: oklch(72% 0.12 330);  --accent-2: oklch(78% 0.13 330);  --accent-ink: oklch(22% 0.03 330); }
-:root[data-mode="light"][data-accent="rose"]  { --accent: oklch(55% 0.14 15);   --accent-2: oklch(49% 0.145 15);  --accent-ink: oklch(99% 0.01 15); }
-:root[data-mode="dark"][data-accent="rose"]   { --accent: oklch(72% 0.13 15);   --accent-2: oklch(78% 0.14 15);   --accent-ink: oklch(23% 0.03 15); }
-
-/* Sepia's paper is darker than plain light, so a few accents need to go a touch
-   darker there to keep accent-coloured text at AA (>=4.5:1). */
-:root[data-theme="sepia"][data-accent="amber"] { --accent: oklch(51% 0.115 72); --accent-2: oklch(46% 0.12 70);  --accent-ink: oklch(99% 0.01 80); }
-:root[data-theme="sepia"][data-accent="blue"]  { --accent: oklch(51% 0.12 250); --accent-2: oklch(46% 0.125 250); --accent-ink: oklch(99% 0.01 250); }
-:root[data-theme="sepia"][data-accent="rose"]  { --accent: oklch(53% 0.14 15);  --accent-2: oklch(48% 0.145 15);  --accent-ink: oklch(99% 0.01 15); }
 
 /* reset / base */
 
@@ -659,14 +594,40 @@ select {
 /* top bar */
 .topbar {
   position: sticky; top: 0; z-index: var(--z-sticky);
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-md);
-  padding: var(--space-xs) var(--space-lg);
+  display: flex; align-items: center; gap: var(--space-md);
+  padding: var(--space-xs) 0 var(--space-xs) var(--space-lg);
   background: var(--paper-2);
   border-bottom: 1px solid var(--rule);
+  -webkit-app-region: drag; /* the top bar is the window's drag handle */
 }
-.topbar-left { display: flex; align-items: center; gap: var(--space-sm); }
+.topbar-left { display: flex; align-items: center; gap: var(--space-sm); margin-right: auto; }
 .topbar .wordmark { font-size: 1.5rem; }
-.topbar-actions { display: flex; gap: var(--space-3xs); }
+.topbar-actions { display: flex; gap: var(--space-3xs); padding-right: var(--space-sm); }
+/* everything clickable in the bar opts out of the drag region */
+.topbar button, .topbar input, .topbar .streak-pop { -webkit-app-region: no-drag; }
+
+/* custom window controls (frameless window) */
+.window-controls { display: flex; align-items: center; -webkit-app-region: no-drag; }
+.win-btn {
+  width: 2.9rem; height: 2rem; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--ink-2); border-radius: var(--radius-sm);
+}
+.win-btn svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 1.1; fill: none; }
+.win-btn:hover { background: var(--paper-3); color: var(--ink); }
+.win-close:hover { background: #e81123; color: #fff; }
+.win-btn .i-restore { display: none; }
+body.is-maximized #win-max .i-max { display: none; }
+body.is-maximized #win-max .i-restore { display: inline; }
+
+/* the lock gate and onboarding have no top bar, so let them drag the window */
+.pin-gate, .onboarding { -webkit-app-region: drag; }
+.pin-card, .onboard-card, .overlay-close { -webkit-app-region: no-drag; }
+.overlay-close {
+  position: fixed; top: 0.4rem; right: 0.6rem; width: 2.4rem; height: 1.9rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--ink-2); border-radius: var(--radius-sm); font-size: 1.2rem; line-height: 1; z-index: var(--z-modal);
+}
+.overlay-close:hover { background: #e81123; color: #fff; }
 
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -918,18 +879,29 @@ body.is-focus .note { min-height: 60vh; }
 #theme-choice .theme-opt.is-selected { background: var(--accent-soft); color: var(--ink); border-color: var(--accent); }
 .theme-swatch { display: flex; height: 2.2rem; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--rule); }
 .theme-swatch > span { flex: 1 1 0; }
-.theme-opt-label { font-size: var(--text-sm); }
+.theme-opt-label { font-size: var(--text-xs); line-height: 1.2; }
 
-/* Accent colour swatches. */
-.accent-choice { display: inline-flex; gap: var(--space-xs); margin-top: var(--space-xs); flex-wrap: wrap; }
-.accent-opt {
-  width: 2rem; height: 2rem; padding: 0; border-radius: var(--radius-pill);
-  border: 2px solid var(--control-border); background: var(--paper);
-  display: grid; place-items: center; cursor: pointer;
-}
-.accent-opt:hover { border-color: var(--ink-3); }
-.accent-opt.is-selected { border-color: var(--ink); box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink); }
-.accent-dot { width: 1.2rem; height: 1.2rem; border-radius: var(--radius-pill); display: block; }
+/* Custom theme builder */
+#custom-section.is-active h3 { color: var(--accent); }
+.custom-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin-top: var(--space-xs); }
+.seg { display: inline-flex; border: 1px solid var(--control-border); border-radius: var(--radius-sm); overflow: hidden; }
+.seg-btn { padding: 0.3rem 0.85rem; border: 0; background: var(--paper); color: var(--ink-2); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--control-border); }
+.seg-btn:hover { background: var(--paper-3); color: var(--ink); }
+.seg-btn.is-on { background: var(--accent); color: var(--accent-ink); }
+.custom-color { display: inline-flex; align-items: center; gap: var(--space-2xs); font-size: var(--text-sm); color: var(--ink-2); }
+.custom-color input[type="color"] { width: 2.2rem; height: 2.2rem; padding: 0; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: none; cursor: pointer; }
+.custom-save-row { display: flex; gap: var(--space-xs); align-items: center; margin-top: var(--space-sm); flex-wrap: wrap; }
+.custom-name { flex: 1 1 12rem; min-width: 0; }
+.theme-presets { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-top: var(--space-sm); }
+.theme-presets:empty { display: none; }
+.preset-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--control-border); border-radius: var(--radius-pill); overflow: hidden; }
+.preset-use { display: inline-flex; align-items: center; gap: var(--space-2xs); padding: 0.25rem 0.6rem; border: 0; background: var(--paper); color: var(--ink); font-size: var(--text-sm); cursor: pointer; }
+.preset-use:hover { background: var(--paper-3); }
+.preset-sw { position: relative; width: 1.15rem; height: 1.15rem; border-radius: var(--radius-pill); border: 1px solid var(--rule); display: inline-block; flex: none; }
+.preset-sw-dot { position: absolute; right: -3px; bottom: -3px; width: 0.7rem; height: 0.7rem; border-radius: var(--radius-pill); border: 1px solid var(--paper-2); }
+.preset-del { border: 0; border-left: 1px solid var(--control-border); background: var(--paper); color: var(--ink-3); padding: 0 0.5rem; font-size: var(--text-md); line-height: 1; cursor: pointer; }
+.preset-del:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* onboarding (first run) */
 .onboarding {

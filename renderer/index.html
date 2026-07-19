@@ -14,6 +14,7 @@
        a legacy window PIN is set. The recovery area below is built by app.js to
        match the mode. -->
   <div id="pin-gate" class="pin-gate" hidden>
+    <button id="gate-close" class="overlay-close" type="button" aria-label="Close Flint" title="Close">×</button>
     <div class="pin-card" role="dialog" aria-modal="true" aria-labelledby="pin-title">
       <div class="pin-lock" aria-hidden="true">
         <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
@@ -33,6 +34,7 @@
 
   <!-- First-run onboarding: theme choice, then an optional PIN (encryption). -->
   <div id="onboarding" class="onboarding" hidden>
+    <button id="onboard-close" class="overlay-close" type="button" aria-label="Close Flint" title="Close">×</button>
     <div class="onboard-card" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
       <div class="onboard-spark" aria-hidden="true">
         <svg class="flame-icon" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
@@ -130,6 +132,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
         </button>
       </nav>
+      <div class="window-controls" aria-label="Window controls">
+        <button id="win-min" class="win-btn" type="button" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 12 12" aria-hidden="true"><line x1="2" y1="6.5" x2="10" y2="6.5"/></svg></button>
+        <button id="win-max" class="win-btn" type="button" aria-label="Maximize" title="Maximize"><svg class="i-max" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg><svg class="i-restore" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.7" y="3.7" width="5.6" height="5.6" rx="1"/><path d="M4.6 3.5V2.4h5.1v5.1H8.5"/></svg></button>
+        <button id="win-close" class="win-btn win-close" type="button" aria-label="Close" title="Close"><svg viewBox="0 0 12 12" aria-hidden="true"><line x1="2.6" y1="2.6" x2="9.4" y2="9.4"/><line x1="9.4" y1="2.6" x2="2.6" y2="9.4"/></svg></button>
+      </div>
     </header>
 
     <p id="load-notice" class="notice" role="alert" hidden></p>
@@ -263,13 +270,25 @@
         <div class="settings-cat" data-cat="appearance">
           <section class="settings-block">
             <h3>Theme</h3>
-            <p class="soft">Pick whatever's easiest on your eyes. System follows your Windows light or dark setting.</p>
+            <p class="soft">Pick a look. System follows your Windows light or dark setting.</p>
             <div class="theme-choice" id="theme-choice" role="group" aria-label="Theme"></div>
           </section>
-          <section class="settings-block">
-            <h3>Accent colour</h3>
-            <p class="soft">A little colour for buttons, links and highlights. It works with any theme.</p>
-            <div class="accent-choice" id="accent-choice" role="group" aria-label="Accent colour"></div>
+          <section class="settings-block" id="custom-section">
+            <h3>Custom theme</h3>
+            <p class="soft">Pick a light or dark base and two colours of your own. Save the ones you like to keep them.</p>
+            <div class="custom-row">
+              <div class="seg" id="custom-base" role="group" aria-label="Base">
+                <button type="button" class="seg-btn" data-base="light" aria-pressed="false">Light</button>
+                <button type="button" class="seg-btn" data-base="dark" aria-pressed="false">Dark</button>
+              </div>
+              <label class="custom-color">Primary <input type="color" id="custom-primary" value="#7aa2f7"></label>
+              <label class="custom-color">Accent <input type="color" id="custom-accent" value="#bb9af7"></label>
+            </div>
+            <div class="custom-save-row">
+              <input type="text" id="custom-name" class="custom-name" placeholder="Name this theme" maxlength="30" aria-label="Preset name">
+              <button type="button" id="custom-save" class="ghost small">Save as preset</button>
+            </div>
+            <div id="theme-presets" class="theme-presets" role="group" aria-label="Saved themes"></div>
           </section>
         </div>
 
@@ -283,6 +302,9 @@
               <input type="time" id="reminder-time" value="20:00">
             </div>
             <p id="reminder-status" class="status" role="status" aria-live="polite"></p>
+            <p class="soft small">Reminders can only appear while Flint is open. To be nudged when it is closed, let it keep running quietly in the background:</p>
+            <label class="toggle-row"><input type="checkbox" id="background-toggle"><span>Keep Flint in the tray so reminders can reach me (starts with Windows)</span></label>
+            <p id="background-status" class="status" role="status" aria-live="polite"></p>
           </section>
 
           <section class="settings-block">

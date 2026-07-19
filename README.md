@@ -33,12 +33,12 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.3.1.exe
+   dist\Flint-Setup-1.4.0.exe
    ```
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.3.1.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.4.0.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -86,7 +86,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.3.1.exe SHA256
+certutil -hashfile Flint-Setup-1.4.0.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -166,7 +166,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.3.1.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.4.0.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
@@ -193,9 +193,14 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
   to paste elsewhere (Settings → "Take your journal with you"). There is also a
   **Daily activities summary** (text or PDF) that lays your days out around
   everyday activities, handy to keep for yourself or to show someone helping you.
-- **Themes and accent colours.** Settings → Appearance. Light, dark or system
-  (which follows Windows), plus warm **Paper**, **Soft night** and **True black**,
-  and a choice of accent colours. Your choice is remembered.
+- **Themes.** Settings → Appearance. Light, dark or system (which follows
+  Windows), plus a range of loved palettes (Nord, Everforest, Rosé Pine,
+  Catppuccin, Tokyo Night, Gruvbox, Solarized, Sepia and more), and a **Custom**
+  theme where you pick your own two colours and save presets.
+- **Reminders that can reach you when it's closed.** The optional daily nudge
+  normally only appears while Flint is open; turn on "keep Flint in the tray" in
+  Settings → Reminders and it starts with Windows and sits quietly in the tray,
+  so the nudge still arrives when the window is shut.
 - **A daily streak.** A small flame by the wordmark lights up once you have
   written today, and counts the days you have kept going.
 - **Your patterns.** A quiet panel (the chart icon) shows how many days you have
