@@ -1,105 +1,140 @@
 # Flint
 
-A quiet, private daily journal for Windows. Your notes never leave this
-computer, everything lives in plain files on your PC. The only times it goes
-online are to check for a new version (optional, and it only downloads, it
-never sends your entries anywhere) and to send feedback you choose to send. See
-sections 7–8.
+A quiet, private daily journal for Windows. Your words never leave this computer:
+they live in ordinary files on your own PC, yours to read and back up, kept as
+plain text by default or scrambled behind a PIN if you turn on encryption. No
+account, no sync, no tracking. Flint goes online for only two things, both optional
+and neither ever carrying a word of your journal: an automatic check for a new
+version when it opens (which you can switch off), and any feedback you choose to send.
 
 ---
 
-## 1. Build it yourself (optional)
+## Install it
 
-Most people just download the installer from the releases page and skip this.
-But because Flint is unsigned (see section 2), you never have to trust that
-download: the whole source is here, and you can build the exact same app from it.
+Double-click the installer, `Flint-Setup-1.4.3.exe` (in your Downloads if you
+downloaded it, or in the `dist` folder if you built it yourself). It installs in a
+few seconds with no questions, then Flint opens by itself. From then on you will
+find **Flint** in the Start menu and as a desktop shortcut, and you open it like
+any other app. No command line, ever.
 
-**One-time setup:** install Node.js from https://nodejs.org (the "LTS" version,
-default options). That is the only tool needed.
-
-Then, in this project folder:
-
-1. Click the File Explorer address bar, type `cmd`, press Enter (a black window
-   opens here).
-2. Type these two commands, pressing Enter after each. The first fetches the
-   build tools (needs internet, the *built app* itself never does), the second
-   builds the installer. Each can take a few minutes:
-
-   ```
-   npm install
-   npm run dist
-   ```
-
-3. When it finishes, the installer is at:
-
-   ```
-   dist\Flint-Setup-1.4.3.exe
-   ```
-
-## 2. How to install it
-
-Double-click `dist\Flint-Setup-1.4.3.exe`. It installs in a few seconds
-with no questions, then Flint opens by itself. From then on you'll find
-**Flint** in the Start menu and as a desktop shortcut. No command line ever
-again, just open it like any other app.
-
-To uninstall: Settings → Apps → Flint → Uninstall. **Uninstalling never
-deletes your entries**, they stay in the data folder below.
+To uninstall later: Settings → Apps → Flint → Uninstall. **Uninstalling never
+deletes your entries**, they stay in the data folder (see "Where your words are
+stored", below).
 
 ### "Windows protected your PC"
 
-The first time you run the installer, Windows SmartScreen will most likely show
-a blue box saying it "prevented an unrecognised app from starting". Click
-**More info**, then **Run anyway**.
+The first time you run the installer, Windows SmartScreen (a built-in safety
+feature) will most likely show a blue box saying it "prevented an unrecognised app
+from starting". Click **More info**, then **Run anyway**.
 
 That warning is worth understanding rather than just clicking past. It does not
-mean Windows found anything wrong with Flint. It means Windows does not
-recognise it. SmartScreen trusts an app once it has been downloaded by enough
-people without incident, or once it is signed with a paid code-signing
-certificate. Flint is a personal project with no certificate and almost no
-downloads, so there is no reputation for Windows to look up, and an app with no
-reputation looks the same to it as an app nobody has ever vetted. The warning
-means *unknown*, not *unsafe*.
+mean Windows found anything wrong with Flint. It means Windows does not *recognise*
+it. SmartScreen trusts an app once it has been downloaded by enough people without
+incident, or once it is signed with a paid code-signing certificate. Flint is a
+personal project with no certificate and almost no downloads, so there is no
+reputation for Windows to look up, and an app with no reputation looks the same to
+it as one nobody has ever vetted. The warning means *unknown*, not *unsafe*.
 
 Two things follow from that:
 
-- It comes back on **every new version**. Reputation is tied to the exact file,
-  so an unsigned app starts from zero each release. (A signed app builds trust
-  that carries across releases, which is the only real fix.)
+- It comes back on **every new version**. Reputation is tied to the exact file, so
+  an unsigned app starts from zero each release. (A signed app builds trust that
+  carries across releases, which is the only real fix.)
 - Some Windows 11 machines run **Smart App Control**, which is stricter and can
-  refuse unsigned apps outright with no "Run anyway" option. If that happens,
-  build Flint yourself instead (section 1).
+  refuse unsigned installers outright with no "Run anyway" option. If that happens,
+  you can run Flint straight from the source instead, without installing anything
+  (see "Build it yourself", at the end).
 
-### Checking it yourself
+If you would rather not take anyone's word that the download is safe, "Check the
+download yourself" near the end shows two ways to verify it.
 
-You should not have to take anyone's word for it. Two ways to check:
+## Getting started
 
-**Scan it.** Upload the `.exe` to [virustotal.com](https://www.virustotal.com),
-which runs it past around 70 antivirus engines at once and shows you every
-result. One caveat, so a surprise does not alarm you: unsigned installers
-commonly pick up a hit or two from obscure engines that flag "unsigned NSIS
-installer" as inherently suspicious. That is a guess about the packaging, not a
-detection of anything in the app. If the well known engines are clean, it is
-clean. If several major engines flag it, do not run it.
+The first time Flint opens it asks how you would like it to look, and offers, only
+if you want, to set a PIN so your journal is encrypted. After that you land on
+today's page: just start writing. There is nothing to save, Flint keeps your words
+as you type. Even one line counts as a day. Come back tomorrow and today is waiting
+in the calendar on the left.
 
-**Check it is the file that was published.** Open a terminal in the download
-folder and run:
+## What's in the app
 
-```
-certutil -hashfile Flint-Setup-1.4.3.exe SHA256
-```
+Everything below is optional and editable inside the app. You never need to open a
+file.
 
-Compare that against the checksum on the release page. If they match, nothing
-altered the file between the release and your PC. (VirusTotal shows the same
-hash, so it does both jobs at once.)
+- **Just write.** Today's page is a plain, open space. Write as much or as little
+  as you like.
+- **Autosaving.** Flint saves as you write, so keeping your words is never something
+  you have to remember. A small dot by the wordmark shows whether everything is
+  saved, and hovering it tells you when it last saved; you can set how often it
+  saves, from every few seconds up to once an hour, in Settings → Writing. It also
+  saves the instant you leave a day, hide the window or close it. The Save button
+  and Ctrl+S are still there if you like to press them, but they are no longer needed.
+- **Your own prompts.** Settings → Writing lets you rename, add, reorder or remove
+  optional guided boxes, to make Flint a health diary, a work log, a gratitude
+  journal, whatever you like. Removing a prompt only hides it; anything you already
+  wrote under it stays saved and still exports.
+- **Templates.** Save reusable layouts and drop one into a day from the Template
+  button under your writing.
+- **"How was today?"** An optional Good / Mixed / Bad marker on each day, plus a
+  separate one-tap "Easier or harder than usual?" so changes from day to day are
+  easy to see later.
+- **A word for how you felt, and what the day held.** Two optional pickers under
+  your writing: name a feeling or two, and tap the everyday things you did.
+- **Star a day** to find it again and filter to just your favourites, and write
+  `- [ ] something` in a note to get a checkbox you can tick.
+- **Reading view.** A button under your writing shows your note as tidy formatted
+  text (headings, lists, tickable checkboxes), for when you would rather read a day
+  than edit it.
+- **Tags.** Label a day (for example "migraine" or "holiday") and click any tag, or
+  type it in Search, to pull up every day with it.
+- **Quick note** (Ctrl+Shift+N) drops a line into today from wherever you are, and
+  **Focus mode** (Ctrl+Shift+F) strips the screen back to just your writing.
+- **Search and date filters** for finding past days, and an **On this day** panel
+  that shows what you wrote on the same date in earlier months and years.
+- **Your patterns.** A quiet panel (the chart icon) shows how many days you have
+  written, your streaks, and a heatmap of your days, by month, by year, or across
+  the last twelve.
+- **A daily streak.** A small flame by the wordmark lights up once you have written
+  today and counts the days you have kept going. You can mark days off (Settings →
+  Reminders) so a planned gap steps over them instead of breaking the streak.
+- **Reminders that can reach you when Flint is closed.** The optional daily nudge
+  normally appears only while Flint is open; turn on "keep Flint in the tray" in
+  Settings → Reminders and it starts with Windows and sits quietly in the tray, so
+  the nudge still arrives when the window is shut.
+- **A nudge when the page is blank.** Open a day you have not written on and Flint
+  can offer a gentle prompt to start from. Ask for another, use it, or wave it away.
+  The prompts are always optional and never time-limited, and on a day you mark Bad
+  they lean to the kinder ones.
+- **A quiet welcome back.** If it has been a while, or a new week has begun, Flint
+  opens with a calm, dismissible line, never a guilt trip, and never a count of what
+  you missed.
+- **Themes.** Settings → Appearance. Light, dark or system (which follows Windows),
+  plus a range of loved palettes (Nord, Everforest, Rosé Pine, Catppuccin, Tokyo
+  Night, Gruvbox, Solarized Light, Sepia and more), and a **Custom** theme where you pick
+  a light, dark or true-black base and your own two colours and save the
+  combinations you like.
+- **Take it with you.** Export your whole journal as a plain text file, a tidy PDF,
+  Markdown (to reuse in another editor), or JSON (to bring back later), or copy it
+  all to paste elsewhere (Settings → Backups & export). There is also a **Daily
+  activities summary** (text or PDF) that lays your days out around everyday
+  activities, handy to keep or to show someone helping you. **Import** brings a
+  Flint JSON file back in, adding only days you do not already have.
+- **A daily backup to a folder you choose.** Flint can drop a dated copy of your
+  journal into a folder you pick (a USB stick, or a folder you already sync) once a
+  day; if your journal is encrypted, the copy is encrypted too (Settings → Backups
+  & export).
+- **Encryption** with a PIN and a one-time recovery code, an optional **auto-lock**
+  after a spell of inactivity, and a **Lock now** button in the top bar (see
+  "Locking and encryption").
+- **Automatic update checks** (optional, see "Automatic updates").
 
-The most honest answer is that you never have to trust the installer at all. The
-source is all here, and `npm install && npm run dist` (section 1) builds the same
-app from code you can read.
+Flint also draws its own tidy window bar (minimise, maximise, close) instead of the
+plain grey Windows frame.
 
-## 3. Where your words are stored
+## Where your words are stored
 
-Everything is in one folder (paste this into the File Explorer address bar):
+Everything is in one folder. Paste this into the File Explorer address bar (AppData
+is a hidden Windows folder that programs use for their own files):
 
 ```
 %APPDATA%\Flint\data
@@ -114,155 +149,171 @@ C:\Users\<your Windows username>\AppData\Roaming\Flint\data
 | File / folder   | What it is                                                        |
 | --------------- | ----------------------------------------------------------------- |
 | `entries.json`  | Your whole journal, every day. Plain readable text, or an encrypted vault if you turn encryption on |
-| `backups\`      | A dated copy from your recent saves, the newest 30 kept (encrypted too, when encryption is on)       |
-| `settings.json` | Your prompts, chosen theme, update choice, and the optional legacy window PIN                        |
+| `backups\`      | A dated copy from your recent saves, the newest 30 kept (encrypted too, when encryption is on)      |
+| `settings.json` | Your preferences: prompts and templates, theme and colours, reminder and backup choices, your update-check choice, streak days off, autosave and auto-lock timings, and the optional legacy window PIN |
+| `media\`        | Only if you attached photos in an older version. New photos can no longer be added, but any you have are kept (encrypted too, when encryption is on) |
 
-This folder is in AppData deliberately: OneDrive and other sync tools don't
-touch it, so nothing is ever uploaded anywhere.
+This folder is in AppData deliberately: OneDrive and other sync tools don't touch
+it, so nothing is ever uploaded anywhere.
 
-Inside the app: open **Settings** (the cog in the top bar) and, under **Where
-your words live**, press **Open that folder**. The same path is shown there too.
+Inside the app: open **Settings** (the cog in the top bar) and, under **Where your
+words live**, press **Open that folder**. The same path is shown there too.
 
-**If something ever goes wrong with the main file**, Flint notices when it
-opens, keeps the damaged file (it never deletes anything), and loads your most
-recent good backup automatically.
+**If something ever goes wrong with the main file**, Flint notices when it opens,
+keeps the damaged file (it never deletes anything), and loads your most recent good
+backup automatically.
 
-## 4. Locking and encryption (optional)
+## Locking and encryption (optional)
 
-By default your entries are plain, readable files on this computer. If you want
-them protected, turn on **encryption**: Settings → **Lock & encryption** →
-*Turn on encryption*. Choose a PIN, and Flint shows you a **recovery code** once.
-Write it down and keep it somewhere safe.
+By default your entries are plain, readable files on this computer. If you want them
+protected, turn on **encryption**: Settings → **Lock & encryption** → *Turn on
+encryption*. Choose a PIN, and Flint shows you a **recovery code** once. Write it
+down and keep it somewhere safe.
 
 From then on:
 
-- Flint asks for your PIN each time it opens, and decrypts your journal only in
-  memory once you unlock. On disk, `entries.json` and its backups are scrambled
-  with AES-256.
-- **Pick a PIN that is worth something.** This is the honest part: the encryption
-  is only ever as strong as the PIN in front of it. Someone who copied your files
-  could guess a 4-digit PIN in seconds and a 6-digit one in minutes, so Flint
-  shows you a live estimate as you type. A short word plus a couple of digits is
-  worth years of guessing; four digits is worth seconds.
+- Flint asks for your PIN each time it starts (and again after an auto-lock), and
+  decrypts your journal only in memory once you unlock. On disk, `entries.json` and
+  its backups are scrambled with AES-256.
+- You can set Flint to **lock itself after a spell of inactivity** (Settings → Lock
+  & encryption), and lock it on demand with the **Lock now** button in the top bar.
+  Your words are always saved before it locks.
+- **Pick a PIN that is worth something.** This is the honest part: the encryption is
+  only ever as strong as the PIN in front of it. Someone who copied your files could
+  guess a 4-digit PIN in seconds and a 6-digit one in minutes, so Flint shows you a
+  live estimate as you type. A short word plus a couple of digits is worth years of
+  guessing; four digits is worth seconds.
 - **Forgotten your PIN?** Enter your recovery code on the lock screen. Flint then
-  asks you to choose a new PIN, and re-locks the journal with a brand new key, so
-  the forgotten PIN and the code you just used both stop working.
+  asks you to choose a new PIN, and re-locks the journal with a brand new key, so the
+  forgotten PIN and the code you just used both stop working.
 - **Changing your PIN** also re-locks the journal with a new key, so you get a new
   recovery code at the same time (the old one stops working). This is what makes a
   PIN change mean something: otherwise an old backup would still answer to the old
   PIN and hand over the same key.
-- **Lose both the PIN and the recovery code** and the journal cannot be opened
-  by anyone, including you. That is what makes the encryption real, so keep the
-  recovery code safe and separate from this computer.
+- **Lose both the PIN and the recovery code** and the journal cannot be opened by
+  anyone, including you. That is what makes the encryption real, so keep the recovery
+  code safe and separate from this computer.
 - You can turn encryption off again (which writes your entries back as readable
   files) from the same Settings section.
 
-There is also an older, lighter **window PIN** that only hides the app window
-without encrypting anything. If you have one set (and haven't turned on
-encryption), a forgotten one is cleared by closing Flint, deleting
-`settings.json` in the data folder, and reopening, your words in `entries.json`
-are untouched. Turning on encryption replaces the window PIN.
+There is also an older, lighter **window PIN** that only hides the app window without
+encrypting anything. If you have one set (and haven't turned on encryption), a
+forgotten one is cleared by closing Flint, deleting `settings.json` in the data
+folder, and reopening; this also resets your other preferences (themes, prompts,
+reminders and so on) but never your entries in `entries.json`. Turning on encryption
+replaces the window PIN.
 
-## 5. Moving to a new computer
+## Moving to a new computer
 
-1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.4.3.exe` you already built onto a USB stick and run
-   it there.
+1. On the new PC: install Flint (see "Install it"), or copy the
+   `Flint-Setup-1.4.3.exe` you already have onto a USB stick and run it there.
 2. Open Flint once on the new PC, then close it.
-3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
+3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (a USB stick is
    fine) to the same place on the new PC, replacing what's there.
 4. Open Flint, everything is back.
 
-Backing up is the same idea: copy that one `data` folder anywhere safe.
+Backing up is the same idea: copy that one `data` folder anywhere safe, or let Flint
+do it for you with the daily backup above.
 
-## 6. What's in the app
+## Privacy and the internet
 
-- **Your own prompts.** Settings → "Your daily prompts" lets you rename, add, reorder or remove the daily boxes, make it a health diary, a work log, a
-  gratitude journal, whatever you like. Removing a prompt only hides it;
-  anything you already wrote under it stays saved and still shows and exports.
-- **"How was today?"** an optional Good / Mixed / Bad marker on each day, plus a
-  separate one-tap **"compared with usual"** (easier, the same, or harder) so
-  changes from day to day are easy to see later.
-- **A word for how you felt, and what the day held.** Two optional pickers under
-  your writing: name a feeling or two, and tap the everyday things you did.
-- **Star a day** you want to find again and filter to just your favourites; and
-  write `- [ ] something` in a note to get a checkbox you can tick in the preview.
-- **Autosaving.** Flint saves as you write, so keeping your words is never something
-  you have to remember. A small dot by the wordmark shows whether everything is
-  saved, and hovering it tells you when it last saved; you can set how often it
-  saves (from every few seconds up to once an hour) in Settings → Writing. It also
-  saves the instant you leave a day, hide the window or close it. The Save button
-  and Ctrl+S are still there if you like to press them, but they are no longer needed.
-- **Tags.** Label a day (e.g. "migraine", "holiday") and click any tag, or
-  type it in Search, to pull up every day with it.
-- **Export** every day as a plain **text file**, a tidy **PDF**, or copy it all
-  to paste elsewhere (Settings → "Take your journal with you"). There is also a
-  **Daily activities summary** (text or PDF) that lays your days out around
-  everyday activities, handy to keep for yourself or to show someone helping you.
-- **Themes.** Settings → Appearance. Light, dark or system (which follows
-  Windows), plus a range of loved palettes (Nord, Everforest, Rosé Pine,
-  Catppuccin, Tokyo Night, Gruvbox, Solarized, Sepia and more), and a **Custom**
-  theme where you pick a light, dark or true-black base and your own two colours,
-  and save the combinations you like as presets.
-- **Reminders that can reach you when it's closed.** The optional daily nudge
-  normally only appears while Flint is open; turn on "keep Flint in the tray" in
-  Settings → Reminders and it starts with Windows and sits quietly in the tray,
-  so the nudge still arrives when the window is shut.
-- **A daily streak.** A small flame by the wordmark lights up once you have
-  written today, and counts the days you have kept going.
-- **Your patterns.** A quiet panel (the chart icon) shows how many days you have
-  written, your streaks, and a heatmap of your days, viewable by month, by year,
-  or across the last twelve.
-- **A nudge when the page is blank.** Open a day you have not written on yet and
-  Flint can offer a gentle prompt to start from. Ask for another, drop it into
-  your writing, or wave it away. The prompts are always optional and never
-  time-limited, and on a day you mark Bad they lean to the kinder ones.
-- **A quiet welcome back.** If it has been a while, or a new week has begun,
-  Flint opens with a calm, dismissible line, never a guilt trip, and it never
-  counts what you missed.
-- **Search and date filters** for finding past days.
-- **Encryption** with a PIN and one-time recovery code (optional, see section 4).
-- **A gentle first-run setup.** The first time Flint opens it asks your theme
-  and, if you want, helps you set a PIN there and then.
-- **Automatic update checks** (optional, see section 8).
+Flint is built so your **notes never leave this computer**. The window you write in
+is sealed off from the network entirely: it cannot make an internet connection even
+if something tried to. Only two things ever go online, and neither ever
+includes your journal entries: an automatic check for a new version when Flint opens
+(on by default, and switchable off in Settings → Updates), and feedback you send
+yourself. The update check only **downloads** a new version, and feedback makes one
+outbound connection to a form service so it can reach the app's maker. No accounts,
+no sync, no analytics.
 
-Everything above is editable inside the app. You never need to open a file.
+- The write-in window's network access is switched off in code, actively cancelled
+  rather than merely avoided. (For the technically curious: `sealSession` /
+  `lockDownNetwork` in `main.js`.)
+- The update check runs in a separate part of the app and reaches only GitHub. The
+  honest caveat: like any download, it reveals your computer's IP address to GitHub,
+  but never a word of your journal.
+- Feedback is only sent when you fill in the Feedback box and click Send. It carries
+  just your note and the name you sign it with (a random one if you leave it blank),
+  and no journal content. It is sent from the general part of the app, never from the
+  private window you write in.
+- Turn update checks off in Settings → Updates and Flint is fully offline again; it
+  then behaves identically with Wi-Fi switched off.
+- Spellcheck is off (Windows spellcheck would fetch dictionaries); the PDF is made on
+  your own machine.
 
-## 7. Privacy and the internet
+## Automatic updates (how new versions reach you)
 
-Flint is built so your **notes never leave this computer**. The window you
-write in is sealed off from the network entirely, it cannot make an internet
-connection even if something tried to. Only two things ever go online, and both
-only when you start them: the optional update check (section 8), and feedback
-you choose to send. The update check only **downloads** a new version, and
-feedback makes one outbound connection to a form service so it can reach the
-app's maker. Neither ever includes your journal entries. No accounts, no sync,
-no analytics.
+Flint checks GitHub for a newer version when it opens (you can switch this off in
+Settings → Updates, or press "Check now" any time). If one exists, a calm bar appears
+offering **Download**, then **Install and restart**. Nothing downloads or installs
+without your click, and if you're offline it simply does nothing.
 
-- The write-in window's network access is hard-blocked (`main.js`, `lockDownNetwork`), actively cancelled, not just avoided.
-- The update check runs in a separate part of the app and reaches only GitHub.
-  The honest caveat: like any download, it reveals your computer's IP address to
-  GitHub, but never a word of your journal.
-- Feedback is only sent when you fill in the Feedback box and click Send. It
-  carries just your note and the name you sign it with (a random one if you
-  leave it blank), and no journal content. It is posted from the main process,
-  not the sealed writing window.
-- Turn update checks off in Settings → Updates and Flint is fully offline
-  again; it then behaves identically with Wi-Fi switched off.
-- Spellcheck is off (Windows spellcheck would fetch dictionaries); the PDF is
-  made on your own machine.
+Each update is an ordinary download from the project's GitHub releases page. Like any
+download it reveals your computer's IP address to GitHub, but never a word of your
+journal. Turn the checks off in Settings → Updates and Flint never reaches out for
+them again.
 
-## 8. Automatic updates (how new versions reach you)
+---
 
-Flint checks GitHub for a newer version when it opens (you can switch this off
-in Settings → Updates, or press "Check now" any time). If one exists, a calm bar
-appears offering **Download**, then **Install and restart**, nothing downloads
-or installs without your click, and if you're offline it simply does nothing.
+## Check the download yourself (optional)
 
-Each update is an ordinary download from the project's GitHub releases page. Like
-any download it reveals your computer's IP address to GitHub, but never a word of
-your journal (see section 7). Turn the checks off in Settings → Updates and Flint
-never reaches out for them again.
+You should not have to take anyone's word that the installer is safe. Two ways to
+check:
+
+**Scan it.** Upload the `.exe` to [virustotal.com](https://www.virustotal.com), which
+runs it past around 70 antivirus engines at once and shows you every result. One
+caveat, so a surprise does not alarm you: unsigned installers commonly pick up a hit
+or two from obscure engines that flag the free tool used to package the installer as
+inherently suspicious. That is a guess about the packaging, not a detection of
+anything in the app. If the well known engines are clean, it is clean. If several
+major engines flag it, do not run it.
+
+**Check it is the file that was published.** This produces a long code that acts like
+a fingerprint for the file: if it matches the one on the release page, nothing
+altered the file between the release and your PC. Open a terminal in the download
+folder and run:
+
+```
+certutil -hashfile Flint-Setup-1.4.3.exe SHA256
+```
+
+Compare that against the checksum on the release page. (VirusTotal shows the same
+code, so it does both jobs at once.)
+
+The most honest answer is that you never have to trust the installer at all: the
+source is all here, and you can build the exact same app from it (below).
+
+## Build it yourself (optional, for the technically inclined)
+
+Most people just download the installer and skip this. But because Flint is unsigned,
+you never have to trust that download: the whole source is here, and `npm install &&
+npm run dist` builds the same app from code you can read.
+
+**One-time setup:** install Node.js from https://nodejs.org (the "LTS" version,
+default options). That is the only tool needed.
+
+Then, in this project folder:
+
+1. Click the File Explorer address bar, type `cmd`, press Enter (a black terminal
+   window opens here).
+2. Type these two commands, pressing Enter after each. The first fetches the build
+   tools (this needs internet; the *built app* itself never does), the second builds
+   the installer. Each can take a few minutes:
+
+   ```
+   npm install
+   npm run dist
+   ```
+
+3. When it finishes, the installer is at:
+
+   ```
+   dist\Flint-Setup-1.4.3.exe
+   ```
+
+To run Flint **without building or installing anything at all** (this is also the way
+past Smart App Control, since nothing is installed), run `npm start` in place of `npm
+run dist`: after `npm install`, `npm start` launches Flint straight from the source.
 
 ---
 
