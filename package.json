@@ -1,5 +1,5 @@
 {
-  "name": "flint", "productName": "Flint", "version": "1.4.3", "description": "Flint, a quiet, private daily journal. Your notes never leave this computer.", "main": "main.js", "license": "MIT", "private": true, "scripts": {
+  "name": "flint", "productName": "Flint", "version": "1.4.4", "description": "Flint, a quiet, private daily journal. Your notes never leave this computer.", "main": "main.js", "license": "MIT", "private": true, "scripts": {
     "start": "electron .", "test": "node tests/store.test.js", "dist": "electron-builder --win", "publish": "electron-builder --win --publish always"
   }, "build": {
     "appId": "com.local.flint", "productName": "Flint", "directories": {
