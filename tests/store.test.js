@@ -357,6 +357,15 @@ async function main() {
     assert.strictEqual(await store.setRunInBackground(false), false);
   });
 
+  await test('autosave interval defaults to 30s, persists, and clamps junk', async () => {
+    assert.strictEqual(await store.getAutosaveSeconds(), 30, 'defaults to 30 seconds');
+    assert.strictEqual(await store.setAutosaveSeconds(5), 5);
+    assert.strictEqual(await store.getAutosaveSeconds(), 5, 'persists a whitelisted value');
+    assert.strictEqual(await store.setAutosaveSeconds(3600), 3600, 'accepts the longest interval (1 hour)');
+    assert.strictEqual(await store.setAutosaveSeconds(0), 30, 'a zero/absurd interval falls back to 30');
+    assert.strictEqual(await store.setAutosaveSeconds(999), 30, 'an off-list value falls back to 30');
+  });
+
   await test('accent get/set persists and rejects unknowns', async () => {
     assert.strictEqual(await store.getAccent(), 'coral', 'defaults to coral');
     assert.strictEqual(await store.setAccent('sage'), 'sage');

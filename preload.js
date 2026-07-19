@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('journal', {
   getStartedOn: () => ipcRenderer.invoke('startedon:get'),
   getAutoLock: () => ipcRenderer.invoke('autolock:get'),
   setAutoLock: (minutes) => ipcRenderer.invoke('autolock:set', minutes),
+  getAutosave: () => ipcRenderer.invoke('autosave:get'),
+  setAutosave: (seconds) => ipcRenderer.invoke('autosave:set', seconds),
   getDaysOff: () => ipcRenderer.invoke('daysoff:get'),
   setDaysOff: (days) => ipcRenderer.invoke('daysoff:set', days),
   getReminder: () => ipcRenderer.invoke('reminder:get'),

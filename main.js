@@ -344,7 +344,9 @@ function askRendererDirty() {
         resolve(v);
       }
     };
-    const timer = setTimeout(() => finish(true), 700);
+    // Longer than the renderer's settle-and-save on close; still defaults to
+    // "unsaved" (the safe direction) if the renderer never answers.
+    const timer = setTimeout(() => finish(true), 2500);
     ipcMain.once('app:dirty-reply', (_e, v) => {
       clearTimeout(timer);
       finish(Boolean(v));
@@ -760,6 +762,22 @@ ipcMain.handle('autolock:get', async () => {
 ipcMain.handle('autolock:set', async (_e, n) => {
   try {
     return { ok: true, minutes: await store.setAutoLockMinutes(n) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('autosave:get', async () => {
+  try {
+    return { ok: true, seconds: await store.getAutosaveSeconds() };
+  } catch (err) {
+    return { ok: false, seconds: 30, error: err.message };
+  }
+});
+
+ipcMain.handle('autosave:set', async (_e, n) => {
+  try {
+    return { ok: true, seconds: await store.setAutosaveSeconds(n) };
   } catch (err) {
     return { ok: false, error: err.message };
   }

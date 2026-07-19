@@ -33,12 +33,12 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.4.2.exe
+   dist\Flint-Setup-1.4.3.exe
    ```
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.4.2.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.4.3.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -86,7 +86,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.4.2.exe SHA256
+certutil -hashfile Flint-Setup-1.4.3.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -166,7 +166,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.4.2.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.4.3.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
@@ -187,11 +187,12 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
   your writing: name a feeling or two, and tap the everyday things you did.
 - **Star a day** you want to find again and filter to just your favourites; and
   write `- [ ] something` in a note to get a checkbox you can tick in the preview.
-- **Autosaving.** Flint saves as you write, a moment after you pause and steadily
-  while you keep going, so keeping your words is never something you have to
-  remember. The Save button and Ctrl+S are still there if you like to press them,
-  but they are no longer needed. Because saving is automatic, opening another day
-  or closing Flint simply keeps what you wrote, with no "unsaved changes" question.
+- **Autosaving.** Flint saves as you write, so keeping your words is never something
+  you have to remember. A small dot by the wordmark shows whether everything is
+  saved, and hovering it tells you when it last saved; you can set how often it
+  saves (from every few seconds up to once an hour) in Settings → Writing. It also
+  saves the instant you leave a day, hide the window or close it. The Save button
+  and Ctrl+S are still there if you like to press them, but they are no longer needed.
 - **Tags.** Label a day (e.g. "migraine", "holiday") and click any tag, or
   type it in Search, to pull up every day with it.
 - **Export** every day as a plain **text file**, a tidy **PDF**, or copy it all
@@ -201,7 +202,8 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
 - **Themes.** Settings → Appearance. Light, dark or system (which follows
   Windows), plus a range of loved palettes (Nord, Everforest, Rosé Pine,
   Catppuccin, Tokyo Night, Gruvbox, Solarized, Sepia and more), and a **Custom**
-  theme where you pick your own two colours and save presets.
+  theme where you pick a light, dark or true-black base and your own two colours,
+  and save the combinations you like as presets.
 - **Reminders that can reach you when it's closed.** The optional daily nudge
   normally only appears while Flint is open; turn on "keep Flint in the tray" in
   Settings → Reminders and it starts with Windows and sits quietly in the tray,

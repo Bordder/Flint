@@ -107,6 +107,9 @@
           </button>
           <div id="streak-pop" class="streak-pop" role="dialog" aria-label="Your writing streak" hidden></div>
         </div>
+        <span id="autosave-ind" class="autosave-ind is-saved" role="img" tabindex="0" aria-label="All changes saved" title="Autosave">
+          <svg class="autosave-dot" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>
+        </span>
       </div>
       <nav class="topbar-actions" aria-label="App controls">
         <button id="quick-btn" class="icon-btn tip" type="button" aria-label="Quick note into today" data-tip="Quick note (Ctrl+Shift+N)">
@@ -275,11 +278,12 @@
           </section>
           <section class="settings-block" id="custom-section">
             <h3>Custom theme</h3>
-            <p class="soft">Pick a light or dark base and two colours of your own. Save the ones you like to keep them.</p>
+            <p class="soft">Pick a light, dark or black base and two colours of your own. The black base gives the same true black as the preset. Save the ones you like to keep them.</p>
             <div class="custom-row">
               <div class="seg" id="custom-base" role="group" aria-label="Base">
                 <button type="button" class="seg-btn" data-base="light" aria-pressed="false">Light</button>
                 <button type="button" class="seg-btn" data-base="dark" aria-pressed="false">Dark</button>
+                <button type="button" class="seg-btn" data-base="black" aria-pressed="false">Black</button>
               </div>
               <label class="custom-color">Primary <input type="color" id="custom-primary" value="#7aa2f7"></label>
               <label class="custom-color">Accent <input type="color" id="custom-accent" value="#bb9af7"></label>
@@ -315,6 +319,24 @@
         </div>
 
         <div class="settings-cat" data-cat="writing" hidden>
+          <section class="settings-block">
+            <h3>Autosave</h3>
+            <p class="soft">Flint saves on its own as you write. This sets how often; the dot at the top of the window shows when it last saved. Leaving a day, hiding Flint or closing it always saves straight away, whatever this is set to.</p>
+            <div class="field sec-autosave">
+              <label for="autosave-select">Save automatically every</label>
+              <select id="autosave-select">
+                <option value="5">5 seconds</option>
+                <option value="15">15 seconds</option>
+                <option value="30">30 seconds</option>
+                <option value="60">1 minute</option>
+                <option value="120">2 minutes</option>
+                <option value="300">5 minutes</option>
+                <option value="600">10 minutes</option>
+                <option value="1800">30 minutes</option>
+                <option value="3600">1 hour</option>
+              </select>
+            </div>
+          </section>
           <section class="settings-block">
             <h3>Guided prompts</h3>
             <p class="soft">Optional structured boxes you can turn on for a day (Food, Sleep, People…). They are off by default, because Flint is free-form writing first.</p>

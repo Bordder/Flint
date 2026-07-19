@@ -35,13 +35,15 @@ let saving = false;
 let appReady = false;               // true once the editor is loaded (gate/onboarding done)
 let calYear, calMonth;              // month currently shown in the calendar
 
-/* autosave */
-let autosaveTimer = null;           // trailing debounce, armed on each keystroke
-let autosaveInterval = null;        // steady ceiling so a nonstop typist still saves
+/* autosave: a periodic save; a quiet top-bar dot shows the state and last-saved time */
+let autosaveHeartbeat = null;       // 1s tick: fires the periodic save and keeps the dot in step
+let autosaveDeadline = 0;           // when the next save is due (epoch ms); 0 = nothing pending
+let autosaveIntervalMs = 30000;     // how often to save while words are unsaved (configurable)
+let lastSavedAt = 0;                // epoch ms of the last successful save, for the hover text
+let indicatorState = '';            // last-rendered indicator state, to skip DOM churn
+let pulseTimer = null;              // clears the save-pulse animation class
 let deleting = false;               // a day removal is mid-flight; hold autosave off
 let loadedTodayWritten = false;     // was today already written when this day was opened
-const AUTOSAVE_IDLE_MS = 2000;      // save this long after the last keystroke
-const AUTOSAVE_CEILING_MS = 10000;  // and at least this often while writing continuously
 
 const $ = (id) => document.getElementById(id);
 
@@ -617,12 +619,12 @@ function renderPromptNudge(empty) {
   const p = nudgePrompt();
   if (!p) { box.hidden = true; box.textContent = ''; return; }
   box.textContent = '';
-  const lead = document.createElement('span'); lead.className = 'nudge-lead'; lead.textContent = 'Need a nudge?';
+  const lead = document.createElement('span'); lead.className = 'nudge-lead'; lead.textContent = 'Not sure where to start?';
   const text = document.createElement('p'); text.className = 'nudge-text'; text.textContent = p.text;
   const row = document.createElement('div'); row.className = 'nudge-actions';
-  const use = document.createElement('button'); use.type = 'button'; use.className = 'ghost small'; use.textContent = 'Use this';
+  const use = document.createElement('button'); use.type = 'button'; use.className = 'ghost small'; use.textContent = 'Start with this';
   use.addEventListener('click', () => useNudgePrompt(p.text));
-  const another = document.createElement('button'); another.type = 'button'; another.className = 'linklike'; another.textContent = 'Another';
+  const another = document.createElement('button'); another.type = 'button'; another.className = 'linklike'; another.textContent = 'Show me another';
   another.addEventListener('click', () => { promptOffset++; renderPromptNudge(noteIsEmpty()); });
   const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'linklike nudge-dismiss'; dismiss.textContent = 'Not now';
   dismiss.addEventListener('click', () => { dismissedNudges.add(currentDate); renderPromptNudge(false); });
@@ -706,6 +708,8 @@ async function saveCurrent(opts = {}) {
     const res = await safeCall(api.save, data, { backup });
     if (res.ok) {
       snapshot = currentState();
+      lastSavedAt = Date.now();
+      if (hasContent) pulseIndicator(); // a soft flash on the top-bar dot when a write lands
       if (quiet) {
         setStatus(hasContent ? 'Saved just now' : 'Removed');
       } else {
@@ -747,20 +751,68 @@ function canAutosave() {
   if (modalIsOpen() || openPanelEl) return false;
   return true;
 }
+// The heartbeat runs once a second for the app's lifetime. It fires the periodic
+// save when the deadline is reached and keeps the top-bar dot in step. The
+// deadline is set ONCE when the first unsaved second begins and is not pushed
+// back by later keystrokes (that would be a debounce). Arming off isDirty()
+// rather than off keystrokes keeps discrete edits (mood, tags, a star) covered.
+function tickAutosave() {
+  if (!canAutosave()) { renderIndicator('paused'); return; }
+  if (!isDirty()) { autosaveDeadline = 0; renderIndicator('saved'); return; }
+  renderIndicator('dirty');
+  if (!autosaveDeadline) autosaveDeadline = Date.now() + autosaveIntervalMs;
+  if (Date.now() >= autosaveDeadline) flushAutosave();
+}
 function scheduleAutosave() {
   if (!appReady || loadFailed) return;
-  clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(flushAutosave, AUTOSAVE_IDLE_MS);
+  if (!autosaveDeadline) autosaveDeadline = Date.now() + autosaveIntervalMs;
+  renderIndicator('dirty');
 }
 function cancelAutosave() {
-  clearTimeout(autosaveTimer);
-  autosaveTimer = null;
+  autosaveDeadline = 0;
+  renderIndicator('saved');
 }
 async function flushAutosave() {
-  clearTimeout(autosaveTimer);
-  autosaveTimer = null;
-  if (!canAutosave() || !isDirty()) return;
+  autosaveDeadline = 0;
+  if (!canAutosave() || !isDirty()) { renderIndicator('saved'); return; }
   await saveCurrent({ quiet: true, backup: false, allowDelete: false, silentError: true });
+  renderIndicator(isDirty() ? 'dirty' : 'saved');
+}
+
+// The top-bar autosave dot: filled when everything is saved, a hollow outline
+// while there are unsaved words, faint when saving is held off. Hovering it
+// shows when the last save happened. A soft pulse marks each write.
+function renderIndicator(state) {
+  const ind = $('autosave-ind'); if (!ind) return;
+  if (indicatorState === state) return;
+  indicatorState = state;
+  ind.classList.toggle('is-saved', state === 'saved');
+  ind.classList.toggle('is-dirty', state === 'dirty');
+  ind.classList.toggle('is-paused', state === 'paused');
+  ind.setAttribute('aria-label', autosaveHoverText());
+}
+function pulseIndicator() {
+  const ind = $('autosave-ind'); if (!ind) return;
+  ind.classList.remove('is-flash'); void ind.offsetWidth; // restart the animation
+  ind.classList.add('is-flash');
+  clearTimeout(pulseTimer);
+  pulseTimer = setTimeout(() => ind.classList.remove('is-flash'), 600);
+}
+// A plain-English "how long ago" for the last save, shown on hover.
+function agoText(ts) {
+  if (!ts) return '';
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return s + ' seconds ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + (m === 1 ? ' minute ago' : ' minutes ago');
+  const h = Math.round(m / 60);
+  return h + (h === 1 ? ' hour ago' : ' hours ago');
+}
+function autosaveHoverText() {
+  if (loadFailed) return 'Saving is switched off just now';
+  if (isDirty()) return lastSavedAt ? 'Unsaved words. Last saved ' + agoText(lastSavedAt) : 'Not saved yet';
+  return lastSavedAt ? 'Saved ' + agoText(lastSavedAt) : 'Nothing to save yet';
 }
 
 /* quick capture */
@@ -998,10 +1050,9 @@ function renderStreakPop() {
   head.append(flame, headText);
   pop.append(head);
 
-  // Progress toward the next milestone.
-  const from = tier ? tier.min : 0;
-  const to = next ? next.min : (tier ? tier.min : 1);
-  const pct = next ? Math.round(((count - from) / (to - from)) * 100) : 100;
+  // Progress toward the next milestone: days done out of the days it needs, so a
+  // 2-day run toward 3 days reads two thirds, not the position within a band.
+  const pct = next ? Math.round((count / next.min) * 100) : 100;
   const bar = document.createElement('div'); bar.className = 'streak-bar';
   const fill = document.createElement('div'); fill.className = 'streak-bar-fill';
   fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
@@ -1335,15 +1386,15 @@ const THEME_META = [
   { key: 'dark', label: 'Dark', sw: ['#2a2621', '#e9e4dc', '#e0915a'] },
   { key: 'true-black', label: 'True black', sw: ['#000000', '#f2ede6', '#e0915a'] },
   { key: 'sepia', label: 'Sepia', sw: ['#f4ecd8', '#5b4636', '#a5612b'] },
-  { key: 'rose-pine-dawn', label: 'Rosé Pine Dawn', sw: ['#faf4ed', '#575279', '#a8455f'] },
-  { key: 'solarized-light', label: 'Solarized Light', sw: ['#fdf6e3', '#4e6469', '#1c6fb0'] },
-  { key: 'catppuccin-latte', label: 'Catppuccin Latte', sw: ['#eff1f5', '#4c4f69', '#7a2fe0'] },
+  { key: 'rose-pine-dawn', label: 'Dawn', sw: ['#faf4ed', '#575279', '#a8455f'] },
+  { key: 'solarized-light', label: 'Solar', sw: ['#fdf6e3', '#4e6469', '#1c6fb0'] },
+  { key: 'catppuccin-latte', label: 'Latte', sw: ['#eff1f5', '#4c4f69', '#7a2fe0'] },
   { key: 'nord', label: 'Nord', sw: ['#2e3440', '#e5e9f0', '#88c0d0'] },
-  { key: 'everforest', label: 'Everforest', sw: ['#2d353b', '#d3c6aa', '#a7c080'] },
-  { key: 'rose-pine', label: 'Rosé Pine', sw: ['#191724', '#e0def4', '#ebbcba'] },
-  { key: 'catppuccin-mocha', label: 'Catppuccin Mocha', sw: ['#1e1e2e', '#cdd6f4', '#cba6f7'] },
-  { key: 'tokyo-night', label: 'Tokyo Night', sw: ['#1a1b26', '#c0caf5', '#7aa2f7'] },
-  { key: 'gruvbox', label: 'Gruvbox', sw: ['#282828', '#ebdbb2', '#fe8019'] }
+  { key: 'everforest', label: 'Forest', sw: ['#2d353b', '#d3c6aa', '#a7c080'] },
+  { key: 'rose-pine', label: 'Rose', sw: ['#191724', '#e0def4', '#ebbcba'] },
+  { key: 'catppuccin-mocha', label: 'Mocha', sw: ['#1e1e2e', '#cdd6f4', '#cba6f7'] },
+  { key: 'tokyo-night', label: 'Tokyo', sw: ['#1a1b26', '#c0caf5', '#7aa2f7'] },
+  { key: 'gruvbox', label: 'Retro', sw: ['#282828', '#ebdbb2', '#fe8019'] }
 ];
 
 function resolveTheme(pref) {
@@ -1360,17 +1411,26 @@ function applyTheme(pref) {
   themePref = (THEME_KEYS.includes(pref) || pref === 'custom') ? pref : 'light';
   const root = document.documentElement;
   if (themePref === 'custom') {
-    const base = customTheme.base === 'dark' ? 'dark' : 'light';
-    root.dataset.theme = base; root.dataset.mode = base; root.dataset.accent = 'custom';
-    root.style.setProperty('--accent', customTheme.primary);
-    root.style.setProperty('--accent-2', customTheme.accent);
-    root.style.setProperty('--accent-ink', readableInk(customTheme.primary));
+    const base = ['light', 'dark', 'black'].includes(customTheme.base) ? customTheme.base : 'light';
+    // A "black" base borrows the true-black neutrals; the chosen colours still layer on top.
+    root.dataset.theme = base === 'black' ? 'true-black' : base;
+    root.dataset.mode = base === 'light' ? 'light' : 'dark';
+    root.dataset.accent = 'custom';
+    // Re-check the colours are #rrggbb before they reach CSS, even though the store
+    // already gates them: a stray value should fall back, never reach setProperty.
+    const isHex = (c) => /^#[0-9a-fA-F]{6}$/.test(c);
+    const prim = isHex(customTheme.primary) ? customTheme.primary : '#7aa2f7';
+    const acc = isHex(customTheme.accent) ? customTheme.accent : '#bb9af7';
+    root.style.setProperty('--accent', prim);
+    root.style.setProperty('--accent-2', acc);
+    root.style.setProperty('--accent-ink', readableInk(prim));
+    root.style.setProperty('--accent-2-ink', readableInk(acc));
   } else {
     const resolved = resolveTheme(themePref);
     root.dataset.theme = resolved;
     root.dataset.mode = DARK_THEMES.includes(resolved) ? 'dark' : 'light';
     delete root.dataset.accent;
-    root.style.removeProperty('--accent'); root.style.removeProperty('--accent-2'); root.style.removeProperty('--accent-ink');
+    root.style.removeProperty('--accent'); root.style.removeProperty('--accent-2'); root.style.removeProperty('--accent-ink'); root.style.removeProperty('--accent-2-ink');
   }
   syncThemeChoice();
 }
@@ -1405,7 +1465,7 @@ function initCustomControls() {
   prim.value = customTheme.primary; acc.value = customTheme.accent;
   syncCustomBase();
   for (const b of document.querySelectorAll('#custom-base .seg-btn')) {
-    b.addEventListener('click', () => { customTheme.base = b.dataset.base === 'dark' ? 'dark' : 'light'; syncCustomBase(); persistCustom(); });
+    b.addEventListener('click', () => { customTheme.base = ['dark', 'black'].includes(b.dataset.base) ? b.dataset.base : 'light'; syncCustomBase(); persistCustom(); });
   }
   const preview = () => { customTheme.primary = prim.value; customTheme.accent = acc.value; applyTheme('custom'); };
   prim.addEventListener('input', preview); acc.addEventListener('input', preview);
@@ -1438,10 +1498,13 @@ function renderThemePresets() {
   box.textContent = '';
   themePresets.forEach((p) => {
     const chip = document.createElement('div'); chip.className = 'preset-chip';
-    const use = document.createElement('button'); use.type = 'button'; use.className = 'preset-use'; use.title = `${p.name} (${p.base})`;
-    const sw = document.createElement('span'); sw.className = 'preset-sw'; sw.style.background = p.base === 'dark' ? '#222' : '#f4f0e8';
-    const dot = document.createElement('span'); dot.className = 'preset-sw-dot'; dot.style.background = p.primary;
-    sw.append(dot);
+    const baseLabel = p.base.charAt(0).toUpperCase() + p.base.slice(1);
+    const use = document.createElement('button'); use.type = 'button'; use.className = 'preset-use'; use.title = `${p.name} (${baseLabel} base)`;
+    const sw = document.createElement('span'); sw.className = 'preset-sw';
+    sw.style.background = p.base === 'black' ? '#000' : p.base === 'dark' ? '#242424' : '#f4f0e8';
+    const d1 = document.createElement('span'); d1.className = 'preset-sw-dot'; d1.style.background = p.primary; d1.title = 'Primary';
+    const d2 = document.createElement('span'); d2.className = 'preset-sw-dot'; d2.style.background = p.accent; d2.title = 'Accent';
+    sw.append(d1, d2);
     const nm = document.createElement('span'); nm.className = 'preset-name'; nm.textContent = p.name;
     use.append(sw, nm);
     use.addEventListener('click', () => {
@@ -2684,7 +2747,19 @@ async function init() {
   // Register the close guard now, before the gate or onboarding can hold up
   // init. Until the editor loads, isDirty() is false, so closing during the
   // gate or onboarding just closes cleanly instead of wrongly asking to save.
-  api.onQueryDirty(() => api.dirtyReply(isDirty()));
+  // On close, actively save any unsaved words and report unsaved=true ONLY if the
+  // save genuinely fails. So the "save before closing?" prompt appears only when
+  // something is really at risk, and closing stays silent when autosave (or this
+  // save) already has it covered.
+  api.onQueryDirty(async () => {
+    cancelAutosave();
+    // let any in-flight flush settle, so its saving-guard is not read as a failure
+    for (let i = 0; i < 20 && saving; i++) await new Promise((r) => setTimeout(r, 15));
+    if (!isDirty()) { api.dirtyReply(false); return; }   // already saved -> close quietly
+    if (saving) { api.dirtyReply(true); return; }         // a save is wedged -> be safe, prompt
+    const ok = await saveCurrent({ quiet: true, backup: true, allowDelete: true, silentError: true });
+    api.dirtyReply(!ok);                                  // prompt only if the save actually failed
+  });
   api.onSaveThenClose(async () => { const ok = await saveCurrent(); if (ok) api.closeNow(); });
 
   let secStatus = await safeCall(api.securityStatus);
@@ -2716,6 +2791,16 @@ async function init() {
 
   const alRes = await safeCall(api.getAutoLock);
   autoLockMinutes = alRes.ok ? alRes.minutes : 15;
+  const asRes = await safeCall(api.getAutosave);
+  autosaveIntervalMs = (asRes.ok ? asRes.seconds : 30) * 1000;
+  const asSel = $('autosave-select');
+  if (asSel) {
+    asSel.value = String(autosaveIntervalMs / 1000);
+    asSel.addEventListener('change', async () => {
+      const r = await safeCall(api.setAutosave, Number(asSel.value));
+      if (r.ok) { autosaveIntervalMs = r.seconds * 1000; autosaveDeadline = 0; indicatorState = ''; }
+    });
+  }
 
   const doRes = await safeCall(api.getDaysOff);
   daysOff = doRes.ok ? doRes.days : [];
@@ -2765,9 +2850,11 @@ async function init() {
   $('note').addEventListener('blur', flushAutosave);
   window.addEventListener('blur', flushAutosave);
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushAutosave(); });
-  // A steady ceiling so unbroken writing (which never pauses to trip the debounce)
-  // still reaches disk regularly, and so discrete edits (mood, tags, a star) land.
-  autosaveInterval = setInterval(flushAutosave, AUTOSAVE_CEILING_MS);
+  // One heartbeat fires the periodic save and keeps the top-bar dot in step.
+  autosaveHeartbeat = setInterval(tickAutosave, 1000);
+  renderIndicator('saved');
+  const asInd = $('autosave-ind');
+  if (asInd) { const setTip = () => { asInd.title = autosaveHoverText(); }; asInd.addEventListener('mouseenter', setTip); asInd.addEventListener('focus', setTip); }
   $('save-btn').addEventListener('click', () => saveCurrent());
   $('delete-btn').addEventListener('click', () => deleteDay(currentDate));
   $('tag-input').addEventListener('keydown', (e) => {

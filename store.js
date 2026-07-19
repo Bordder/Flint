@@ -620,7 +620,7 @@ const HEX6 = /^#[0-9a-fA-F]{6}$/;
 function normaliseCustom(c) {
   c = c && typeof c === 'object' ? c : {};
   return {
-    base: c.base === 'dark' ? 'dark' : 'light',
+    base: ['dark', 'black'].includes(c.base) ? c.base : 'light',
     primary: HEX6.test(c.primary) ? c.primary : '#7aa2f7',
     accent: HEX6.test(c.accent) ? c.accent : '#bb9af7'
   };
@@ -632,7 +632,7 @@ function normaliseThemePresets(list) {
     if (!p || typeof p.name !== 'string' || !p.name.trim()) continue;
     out.push({
       name: p.name.trim().slice(0, 30),
-      base: p.base === 'dark' ? 'dark' : 'light',
+      base: ['dark', 'black'].includes(p.base) ? p.base : 'light',
       primary: HEX6.test(p.primary) ? p.primary : '#888888',
       accent: HEX6.test(p.accent) ? p.accent : '#888888'
     });
@@ -720,6 +720,22 @@ async function setAutoLockMinutes(n) {
   s.autoLockMinutes = AUTOLOCK_CHOICES.includes(Number(n)) ? Number(n) : 15;
   await saveSettings(s);
   return s.autoLockMinutes;
+}
+
+// Seconds between automatic saves while there are unsaved words. Clamped to a
+// whitelist so a bad value can never set a 0/absurd interval.
+const AUTOSAVE_CHOICES = [5, 15, 30, 60, 120, 300, 600, 1800, 3600];
+
+async function getAutosaveSeconds() {
+  const s = await loadSettings();
+  return AUTOSAVE_CHOICES.includes(s.autosaveSeconds) ? s.autosaveSeconds : 30;
+}
+
+async function setAutosaveSeconds(n) {
+  const s = await loadSettings();
+  s.autosaveSeconds = AUTOSAVE_CHOICES.includes(Number(n)) ? Number(n) : 30;
+  await saveSettings(s);
+  return s.autosaveSeconds;
 }
 
 // Whether the one-time first-run onboarding has been completed.
@@ -1776,7 +1792,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };
