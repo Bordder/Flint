@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('journal', {
   load: () => ipcRenderer.invoke('journal:load'),
-  save: (data) => ipcRenderer.invoke('journal:save', data),
+  save: (data, opts) => ipcRenderer.invoke('journal:save', data, opts),
   exportToFile: () => ipcRenderer.invoke('journal:export-file'),
   exportToPdf: () => ipcRenderer.invoke('journal:export-pdf'),
   exportToMarkdown: () => ipcRenderer.invoke('journal:export-markdown'),

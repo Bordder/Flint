@@ -35,6 +35,14 @@ let saving = false;
 let appReady = false;               // true once the editor is loaded (gate/onboarding done)
 let calYear, calMonth;              // month currently shown in the calendar
 
+/* autosave */
+let autosaveTimer = null;           // trailing debounce, armed on each keystroke
+let autosaveInterval = null;        // steady ceiling so a nonstop typist still saves
+let deleting = false;               // a day removal is mid-flight; hold autosave off
+let loadedTodayWritten = false;     // was today already written when this day was opened
+const AUTOSAVE_IDLE_MS = 2000;      // save this long after the last keystroke
+const AUTOSAVE_CEILING_MS = 10000;  // and at least this often while writing continuously
+
 const $ = (id) => document.getElementById(id);
 
 async function safeCall(fn, ...args) {
@@ -263,7 +271,7 @@ function buildPromptSections() {
     if (!q.hint) hint.hidden = true;
     const ta = document.createElement('textarea'); ta.id = `box-${q.key}`; ta.rows = 2;
     if (q.hint) ta.setAttribute('aria-describedby', `hint-${q.key}`);
-    ta.addEventListener('input', () => autosize(ta));
+    ta.addEventListener('input', () => { autosize(ta); scheduleAutosave(); });
     wrap.append(label, hint, ta); holder.append(wrap);
   }
 }
@@ -514,9 +522,13 @@ function entryHasAny(entry) {
 }
 
 function loadEditor(dateIso) {
+  cancelAutosave(); // a pending tick must not write the old day into the new one
   currentDate = dateIso;
   promptOffset = 0;
   const entry = data.entries[dateIso] || {};
+  // Remember whether today was already written when opened, so the "that is
+  // today done" milestone fires on the writer's own save, not on an autosave.
+  loadedTodayWritten = dateIso === todayISO() && entryHasAnyContent(entry);
   $('note').value = entryNote(entry);
   autosize($('note'));
   currentDay = typeof entry.__day === 'string' ? entry.__day : '';
@@ -657,9 +669,18 @@ function maybeShowGreeting() {
   box.hidden = false;
 }
 
-async function saveCurrent() {
+// The one place words reach disk. Manual saves (the button, Ctrl+S) use the
+// defaults; autosave and the checkpoint saves pass options:
+//   quiet       - a soft "Saved just now" instead of the milestone/plain line
+//   backup      - false on autosave ticks so the 30-copy ring is not churned
+//   allowDelete - false on autosave ticks so a mid-rewrite clear never deletes
+//                 the day on disk (a deliberate save/day-switch still does)
+//   silentError - a legible status instead of a focus-stealing modal on failure
+async function saveCurrent(opts = {}) {
+  const { quiet = false, backup = true, allowDelete = true, silentError = false } = opts;
   if (saving) return false;
   if (loadFailed) {
+    if (silentError) return false; // saving is deliberately off; do not nag on a tick
     await showModal({
       title: 'Saving is switched off for now', body: 'Your journal file could not be opened when the app started, so saving is blocked to protect the entries already on disk.\n\nEverything you typed is still on the page. Use "Try loading again" in the notice at the top.', buttons: [{ label: 'Back to my writing', value: 'ok', kind: 'primary' }]
     });
@@ -669,30 +690,77 @@ async function saveCurrent() {
   try {
     const existed = Object.prototype.hasOwnProperty.call(data.entries, currentDate);
     const previous = existed ? data.entries[currentDate] : undefined;
-    const wasWrittenBefore = entryHasAnyContent(previous);
     const entry = buildEntry(previous);
     const hasContent = entryHasAny(entry);
-    if (!hasContent && !existed) { setStatus('Nothing written for this day yet.'); return true; }
-    if (hasContent) { entry.updatedAt = new Date().toISOString(); data.entries[currentDate] = entry; }
-    else delete data.entries[currentDate];
-    const res = await safeCall(api.save, data);
+    const isToday = currentDate === todayISO();
+    if (!hasContent) {
+      if (!existed) { if (!quiet) setStatus('Nothing written for this day yet.'); return true; }
+      // A cleared note pausing mid-rewrite must not delete the day out from under
+      // the writer. Only a deliberate save or day-switch removes an emptied day.
+      if (!allowDelete) return true;
+      delete data.entries[currentDate];
+    } else {
+      entry.updatedAt = new Date().toISOString();
+      data.entries[currentDate] = entry;
+    }
+    const res = await safeCall(api.save, data, { backup });
     if (res.ok) {
       snapshot = currentState();
-      // A quiet, warmer note the first time today crosses into "written", not on
-      // every save. Understated on purpose: a nod, not a fanfare.
-      const madeTodayWritten = hasContent && currentDate === todayISO() && !wasWrittenBefore;
-      setStatus(hasContent ? (madeTodayWritten ? 'Saved. That is today done.' : 'Saved.') : 'This day has been removed.');
+      if (quiet) {
+        setStatus(hasContent ? 'Saved just now' : 'Removed');
+      } else {
+        // A quiet, warmer note the first time today crosses into "written", not on
+        // every save. Measured against the day as it was opened, so an autosave in
+        // between never quietly spends this moment. Understated: a nod, not a fanfare.
+        const madeTodayWritten = hasContent && isToday && !loadedTodayWritten;
+        setStatus(hasContent ? (madeTodayWritten ? 'Saved. That is today done.' : 'Saved.') : 'This day has been removed.');
+      }
+      // Only a deliberate save consumes the milestone, so autosaving today's first
+      // line does not rob the writer of seeing it on their own save.
+      if (!quiet && hasContent && isToday) loadedTodayWritten = true;
       if (res.backupWarning) showNotice(res.backupWarning);
       renderWriterHead(); renderCount(); renderCalendar(); updateEmptyHelpers();
       return true;
     }
     if (existed) data.entries[currentDate] = previous; else delete data.entries[currentDate];
+    if (silentError) {
+      setStatus('Not saved yet. Your words are safe on the page and will save on your next pause.', { error: true, sticky: true });
+      return false;
+    }
     setStatus('Not saved, see the message.', { error: true, sticky: true });
     await showModal({
       title: 'Your words could not be saved', body: (res.error || 'Something went wrong writing to disk.') + '\n\nNothing has been lost. Everything you typed is still on the page, so please try saving again.', buttons: [{ label: 'Back to my writing', value: 'ok', kind: 'primary' }]
     });
     return false;
   } finally { saving = false; $('save-btn').disabled = false; }
+}
+
+// Autosave: a trailing debounce (a save shortly after you pause), a steady
+// ceiling so continuous writing still lands, and immediate flushes at the
+// moments words are most at risk (leaving the editor, hiding the window,
+// switching day, closing). Every path funnels through saveCurrent() so it
+// inherits the saving guard, the locked-vault and loadFailed refusals, the
+// empty-day rule and the snapshot reset. Ticks suppress the backup.
+function canAutosave() {
+  if (!appReady || loadFailed || saving || deleting) return false;
+  const gate = $('pin-gate'); if (gate && gate.hidden === false) return false;
+  if (modalIsOpen() || openPanelEl) return false;
+  return true;
+}
+function scheduleAutosave() {
+  if (!appReady || loadFailed) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(flushAutosave, AUTOSAVE_IDLE_MS);
+}
+function cancelAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+}
+async function flushAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+  if (!canAutosave() || !isDirty()) return;
+  await saveCurrent({ quiet: true, backup: false, allowDelete: false, silentError: true });
 }
 
 /* quick capture */
@@ -742,38 +810,52 @@ async function quickCapture() {
   setStatus('Added to today.');
 }
 
-async function guardDirty(actionLabel) {
+// Called before leaving the open day (opening another day, searching, locking,
+// importing, updating). With autosave on there is nothing to prompt about: any
+// pending words are written as a real checkpoint (with a backup) before we move.
+// If that write fails, saveCurrent shows its modal and we return false so the
+// navigation is cancelled and nothing crosses into the wrong day.
+async function guardDirty(_actionLabel) {
+  cancelAutosave();
+  // Let any autosave already in flight settle, so its saving-guard "false" is not
+  // mistaken for a save failure that would wrongly block the navigation.
+  for (let i = 0; i < 150 && saving; i++) await new Promise((r) => setTimeout(r, 20));
   if (!isDirty()) return true;
-  const label = currentDate === todayISO() ? 'today' : longDate(currentDate);
-  const choice = await showModal({
-    title: 'You have unsaved words', body: `Save ${label} before ${actionLabel}?`, buttons: [
-      { label: 'Save first', value: 'save', kind: 'primary' }, { label: "Don't save", value: 'discard' }, { label: 'Stay here', value: 'stay' }
-    ]
-  });
-  if (choice === 'save') return await saveCurrent();
-  return choice === 'discard';
+  if (saving) {
+    // A save is still running after the wait (a stalled disk). Rather than
+    // silently swallow the click, keep the writer where they are and say why.
+    setStatus('Still saving your words. Give it a moment, then try again.', { error: true, sticky: true });
+    return false;
+  }
+  return await saveCurrent({ quiet: true, backup: true, allowDelete: true });
 }
 
 async function deleteDay(date) {
   if (loadFailed) { await saveCurrent(); return; }
-  const alsoLosesUnsaved = date === currentDate && isDirty();
-  const choice = await showModal({
-    title: `Delete ${longDate(date)}?`, body: "This removes that day's writing from your journal. A backup copy from before this change stays in your backups folder." +
-      (alsoLosesUnsaved ? '\n\nThis day is open with unsaved words, deleting discards those too, and they are in no backup.' : ''), buttons: [
-      { label: 'Delete this day', value: 'delete', kind: 'danger' }, { label: 'Keep it', value: 'keep', kind: 'primary' }
-    ], focusValue: 'keep'
-  });
-  if (choice !== 'delete') return;
-  const previous = data.entries[date]; delete data.entries[date];
-  const res = await safeCall(api.save, data);
-  if (!res.ok) {
-    data.entries[date] = previous;
-    await showModal({ title: 'That day could not be removed', body: (res.error || 'Something went wrong writing to disk.') + '\n\nNothing was changed.', buttons: [{ label: 'OK', value: 'ok', kind: 'primary' }] });
-    return;
-  }
-  if (date === currentDate) loadEditor(currentDate);
-  renderCount(); renderCalendar(); renderWriterHead();
-  setStatus(`${longDate(date)} removed.`);
+  // Hold autosave off across the whole removal: a debounce armed by the last
+  // keystroke must not fire during the confirm or the write and re-add the day.
+  cancelAutosave();
+  deleting = true;
+  try {
+    const alsoLosesUnsaved = date === currentDate && isDirty();
+    const choice = await showModal({
+      title: `Delete ${longDate(date)}?`, body: "This removes that day's writing from your journal. A backup copy from before this change stays in your backups folder." +
+        (alsoLosesUnsaved ? '\n\nThis day is open with unsaved words, deleting discards those too, and they are in no backup.' : ''), buttons: [
+        { label: 'Delete this day', value: 'delete', kind: 'danger' }, { label: 'Keep it', value: 'keep', kind: 'primary' }
+      ], focusValue: 'keep'
+    });
+    if (choice !== 'delete') return;
+    const previous = data.entries[date]; delete data.entries[date];
+    const res = await safeCall(api.save, data);
+    if (!res.ok) {
+      data.entries[date] = previous;
+      await showModal({ title: 'That day could not be removed', body: (res.error || 'Something went wrong writing to disk.') + '\n\nNothing was changed.', buttons: [{ label: 'OK', value: 'ok', kind: 'primary' }] });
+      return;
+    }
+    if (date === currentDate) loadEditor(currentDate);
+    renderCount(); renderCalendar(); renderWriterHead();
+    setStatus(`${longDate(date)} removed.`);
+  } finally { deleting = false; }
 }
 
 /* guided prompts toggle */
@@ -1594,6 +1676,7 @@ function updateFooter(encrypted) {
 }
 
 async function lockAndGate() {
+  cancelAutosave(); // no tick may fire against the vault we are about to lock
   await safeCall(api.lock);
   data = { version: 1, entries: {} };   // clear the words from the page behind the gate
   loadEditor(currentDate);              // resets the editor and the dirty snapshot
@@ -1635,8 +1718,9 @@ async function autoLockNow() {
   // Don't lock out from under an open dialog or settings panel: being in one is a
   // sign someone is still here. The timer resumes once it is closed.
   if (modalIsOpen() || openPanelEl) { resetAutoLockTimer(); return; }
+  cancelAutosave();
   if (isDirty()) {
-    const saved = await saveCurrent();
+    const saved = await saveCurrent({ quiet: true, backup: true, allowDelete: true, silentError: true });
     if (!saved) { resetAutoLockTimer(); return; }
   }
   await lockAndGate();
@@ -2675,7 +2759,15 @@ async function init() {
   if (needGate) $('note').focus();
 
   // editor inputs
-  $('note').addEventListener('input', () => { autosize($('note')); updateEmptyHelpers(); });
+  $('note').addEventListener('input', () => { autosize($('note')); updateEmptyHelpers(); scheduleAutosave(); });
+  // Immediate autosave at the moments words are most at risk: attention leaving
+  // the editor or Flint, and the window being hidden (including close-to-tray).
+  $('note').addEventListener('blur', flushAutosave);
+  window.addEventListener('blur', flushAutosave);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushAutosave(); });
+  // A steady ceiling so unbroken writing (which never pauses to trip the debounce)
+  // still reaches disk regularly, and so discrete edits (mood, tags, a star) land.
+  autosaveInterval = setInterval(flushAutosave, AUTOSAVE_CEILING_MS);
   $('save-btn').addEventListener('click', () => saveCurrent());
   $('delete-btn').addEventListener('click', () => deleteDay(currentDate));
   $('tag-input').addEventListener('keydown', (e) => {

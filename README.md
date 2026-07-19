@@ -33,12 +33,12 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.4.0.exe
+   dist\Flint-Setup-1.4.1.exe
    ```
 
 ## 2. How to install it
 
-Double-click `dist\Flint-Setup-1.4.0.exe`. It installs in a few seconds
+Double-click `dist\Flint-Setup-1.4.1.exe`. It installs in a few seconds
 with no questions, then Flint opens by itself. From then on you'll find
 **Flint** in the Start menu and as a desktop shortcut. No command line ever
 again, just open it like any other app.
@@ -86,7 +86,7 @@ clean. If several major engines flag it, do not run it.
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.4.0.exe SHA256
+certutil -hashfile Flint-Setup-1.4.1.exe SHA256
 ```
 
 Compare that against the checksum on the release page. If they match, nothing
@@ -114,7 +114,7 @@ C:\Users\<your Windows username>\AppData\Roaming\Flint\data
 | File / folder   | What it is                                                        |
 | --------------- | ----------------------------------------------------------------- |
 | `entries.json`  | Your whole journal, every day. Plain readable text, or an encrypted vault if you turn encryption on |
-| `backups\`      | A dated copy from each of your last 30 saves (encrypted too, when encryption is on)                 |
+| `backups\`      | A dated copy from your recent saves, the newest 30 kept (encrypted too, when encryption is on)       |
 | `settings.json` | Your prompts, chosen theme, update choice, and the optional legacy window PIN                        |
 
 This folder is in AppData deliberately: OneDrive and other sync tools don't
@@ -166,7 +166,7 @@ are untouched. Turning on encryption replaces the window PIN.
 ## 5. Moving to a new computer
 
 1. On the new PC: build and install Flint (sections 1–2), or copy the
-   `dist\Flint-Setup-1.4.0.exe` you already built onto a USB stick and run
+   `dist\Flint-Setup-1.4.1.exe` you already built onto a USB stick and run
    it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (USB stick is
@@ -187,6 +187,11 @@ Backing up is the same idea: copy that one `data` folder anywhere safe.
   your writing: name a feeling or two, and tap the everyday things you did.
 - **Star a day** you want to find again and filter to just your favourites; and
   write `- [ ] something` in a note to get a checkbox you can tick in the preview.
+- **Autosaving.** Flint saves as you write, a moment after you pause and steadily
+  while you keep going, so keeping your words is never something you have to
+  remember. The Save button and Ctrl+S are still there if you like to press them,
+  but they are no longer needed. Because saving is automatic, opening another day
+  or closing Flint simply keeps what you wrote, with no "unsaved changes" question.
 - **Tags.** Label a day (e.g. "migraine", "holiday") and click any tag, or
   type it in Search, to pull up every day with it.
 - **Export** every day as a plain **text file**, a tidy **PDF**, or copy it all

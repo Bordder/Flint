@@ -60,6 +60,32 @@ async function main() {
     assert.strictEqual(newest.entries['2026-01-01'].other, 'save number 34');
   });
 
+  await test('autosave (backup:false) updates the main file but writes no backup', async () => {
+    // Its own root so the extra saves never disturb the shared backup ring that
+    // later ordering-sensitive tests (corruption recovery) rely on.
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-autosave-'));
+    const PA = store.init(rootA);
+    try {
+      const data = store.emptyData();
+      data.entries['2026-02-02'] = { note: 'checkpoint' };
+      await store.saveData(data); // a real save, one backup
+      const countBackups = () =>
+        fs.readdirSync(PA.backupsDir).filter((n) => /^entries-.*\.json$/.test(n)).length;
+      const before = countBackups();
+      // Many autosave ticks must not add a single backup...
+      for (let i = 0; i < 20; i++) {
+        data.entries['2026-02-02'] = { note: `tick ${i}` };
+        await store.saveData(data, { backup: false });
+      }
+      assert.strictEqual(countBackups(), before, 'no backups added by autosave ticks');
+      // ...yet every word is on disk in the main file.
+      const loaded = await store.loadData();
+      assert.strictEqual(loaded.data.entries['2026-02-02'].note, 'tick 19');
+    } finally {
+      store.init(root); // restore the shared root for later tests
+    }
+  });
+
   await test('no .tmp file is left behind after saving', async () => {
     assert.ok(!fs.existsSync(P.dataFile + '.tmp'));
   });

@@ -368,9 +368,9 @@ ipcMain.handle('journal:load', async () => {
   }
 });
 
-ipcMain.handle('journal:save', async (_e, data) => {
+ipcMain.handle('journal:save', async (_e, data, opts) => {
   try {
-    const { backupWarning } = await store.saveData(data);
+    const { backupWarning } = await store.saveData(data, opts);
     return { ok: true, backupWarning: backupWarning || null };
   } catch (err) {
     return { ok: false, error: err.message };

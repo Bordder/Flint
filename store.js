@@ -321,8 +321,8 @@ async function newestValidBackup() {
 // same temp file.
 let saveChain = Promise.resolve();
 
-function saveData(data) {
-  return runExclusive(() => doSaveData(data));
+function saveData(data, opts) {
+  return runExclusive(() => doSaveData(data, opts));
 }
 
 // Runs work after any in-flight save (or earlier exclusive op) has finished,
@@ -334,7 +334,8 @@ function runExclusive(fn) {
   return run;
 }
 
-async function doSaveData(data) {
+async function doSaveData(data, opts = {}) {
+  opts = opts || {}; // tolerate an explicit null, not just a missing argument
   if (!isValidData(data)) {
     throw new Error('Flint was asked to save something that does not look like journal data. Nothing was written.');
   }
@@ -383,6 +384,12 @@ async function doSaveData(data) {
       `File: ${P.dataFile}`
     );
   }
+
+  // Autosave ticks pass { backup: false }: the main file is already safely on
+  // disk (atomic temp+rename above), and skipping the backup keeps the 30-copy
+  // ring holding genuine checkpoints (manual save, day-switch, lock, close,
+  // export) instead of being churned away every few seconds of typing.
+  if (opts.backup === false) return {};
 
   try {
     await writeBackup(json);
