@@ -11,7 +11,7 @@ version when it opens (which you can switch off), and any feedback you choose to
 
 ## Install it
 
-Double-click the installer, `Flint-Setup-1.4.3.exe` (in your Downloads if you
+Double-click the installer, `Flint-Setup-1.4.4.exe` (in your Downloads if you
 downloaded it, or in the `dist` folder if you built it yourself). It installs in a
 few seconds with no questions, then Flint opens by itself. From then on you will
 find **Flint** in the Start menu and as a desktop shortcut, and you open it like
@@ -206,7 +206,7 @@ replaces the window PIN.
 ## Moving to a new computer
 
 1. On the new PC: install Flint (see "Install it"), or copy the
-   `Flint-Setup-1.4.3.exe` you already have onto a USB stick and run it there.
+   `Flint-Setup-1.4.4.exe` you already have onto a USB stick and run it there.
 2. Open Flint once on the new PC, then close it.
 3. Copy the whole `%APPDATA%\Flint\data` folder from the old PC (a USB stick is
    fine) to the same place on the new PC, replacing what's there.
@@ -274,7 +274,7 @@ altered the file between the release and your PC. Open a terminal in the downloa
 folder and run:
 
 ```
-certutil -hashfile Flint-Setup-1.4.3.exe SHA256
+certutil -hashfile Flint-Setup-1.4.4.exe SHA256
 ```
 
 Compare that against the checksum on the release page. (VirusTotal shows the same
@@ -308,7 +308,7 @@ Then, in this project folder:
 3. When it finishes, the installer is at:
 
    ```
-   dist\Flint-Setup-1.4.3.exe
+   dist\Flint-Setup-1.4.4.exe
    ```
 
 To run Flint **without building or installing anything at all** (this is also the way

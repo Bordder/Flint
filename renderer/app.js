@@ -372,11 +372,15 @@ function toggleFeelingsPicker() {
   const box = $('feelings-picker'); if (!box) return;
   if (!box.hidden) { closeFeelingsPicker(); return; }
   buildFeelingsPicker();
-  box.hidden = false; $('feelings-add').setAttribute('aria-expanded', 'true');
+  box.hidden = false;
+  // The button reads "Done" while the list is open, so it is obvious that the
+  // same button closes it again.
+  const btn = $('feelings-add'); if (btn) { btn.setAttribute('aria-expanded', 'true'); btn.textContent = 'Done'; }
 }
 function closeFeelingsPicker() {
   const box = $('feelings-picker'); if (!box) return;
-  box.hidden = true; const btn = $('feelings-add'); if (btn) btn.setAttribute('aria-expanded', 'false');
+  box.hidden = true;
+  const btn = $('feelings-add'); if (btn) { btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'Add a feeling'; }
 }
 
 /* favourite (star a day) */
@@ -454,11 +458,13 @@ function toggleActivitiesPicker() {
   const box = $('activities-picker'); if (!box) return;
   if (!box.hidden) { closeActivitiesPicker(); return; }
   buildActivitiesPicker();
-  box.hidden = false; $('activities-add').setAttribute('aria-expanded', 'true');
+  box.hidden = false;
+  const btn = $('activities-add'); if (btn) { btn.setAttribute('aria-expanded', 'true'); btn.textContent = 'Done'; }
 }
 function closeActivitiesPicker() {
   const box = $('activities-picker'); if (!box) return;
-  box.hidden = true; const btn = $('activities-add'); if (btn) btn.setAttribute('aria-expanded', 'false');
+  box.hidden = true;
+  const btn = $('activities-add'); if (btn) { btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'Add activities'; }
 }
 
 function noteValue() { return $('note').value; }
