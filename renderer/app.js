@@ -661,6 +661,10 @@ function nudgePrompt() {
 function renderPromptNudge(empty) {
   const box = $('prompt-nudge'); if (!box) return;
   if (!appReady || !empty || dismissedNudges.has(currentDate)) { box.hidden = true; box.textContent = ''; return; }
+  // One welcome at a time. The greeting is already a warm word about the blank
+  // page, and stacking the nudge under it made a blank day speak twice.
+  const greeting = $('greeting');
+  if (greeting && !greeting.hidden) { box.hidden = true; box.textContent = ''; return; }
   const p = nudgePrompt();
   if (!p) { box.hidden = true; box.textContent = ''; return; }
   box.textContent = '';
@@ -711,9 +715,10 @@ function maybeShowGreeting() {
   const p = document.createElement('p'); p.className = 'greeting-text'; p.textContent = msg;
   const close = document.createElement('button'); close.type = 'button'; close.className = 'greeting-close';
   close.setAttribute('aria-label', 'Dismiss'); close.textContent = '×';
-  close.addEventListener('click', () => { box.hidden = true; box.textContent = ''; });
+  close.addEventListener('click', () => { box.hidden = true; box.textContent = ''; updateEmptyHelpers(); });
   box.append(p, close);
   box.hidden = false;
+  updateEmptyHelpers(); // the nudge stands down while the greeting is showing, and returns when it goes
 }
 
 // The one place words reach disk. Ctrl+S uses the defaults; autosave and the
