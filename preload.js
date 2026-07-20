@@ -22,8 +22,6 @@ contextBridge.exposeInMainWorld('journal', {
   setActivities: (list) => ipcRenderer.invoke('activities:set', list),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
-  getAccent: () => ipcRenderer.invoke('accent:get'),
-  setAccent: (accent) => ipcRenderer.invoke('accent:set', accent),
   getCustom: () => ipcRenderer.invoke('custom:get'),
   setCustom: (custom) => ipcRenderer.invoke('custom:set', custom),
   setThemePresets: (list) => ipcRenderer.invoke('theme-presets:set', list),
@@ -83,7 +81,6 @@ contextBridge.exposeInMainWorld('journal', {
   closeNow: () => ipcRenderer.send('app:close-now'),
   dirtyReply: (v) => ipcRenderer.send('app:dirty-reply', Boolean(v)),
 
-  onMenu: (cb) => ipcRenderer.on('menu', (_e, action) => cb(action)),
   onQueryDirty: (cb) => ipcRenderer.on('app:query-dirty', () => cb()),
   onSaveThenClose: (cb) => ipcRenderer.on('app:save-then-close', () => cb())
 });

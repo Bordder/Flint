@@ -125,9 +125,6 @@
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><g class="rays"><line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.2" y2="6.2"/><line x1="17.8" y1="17.8" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.2" y2="17.8"/><line x1="17.8" y1="6.2" x2="19.6" y2="4.4"/></g></svg>
           <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
         </button>
-        <button id="privacy-btn" class="icon-btn tip" type="button" aria-label="Privacy and what Flint shares" data-tip="Privacy">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4.5 6v5.5c0 4.6 3.2 8 7.5 10 4.3-2 7.5-5.4 7.5-10V6z"/></svg>
-        </button>
         <button id="settings-btn" class="icon-btn tip" type="button" aria-label="Settings" data-tip="Settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -145,6 +142,7 @@
     <p id="load-notice" class="notice" role="alert" hidden></p>
     <div id="update-banner" class="update-banner" role="status" aria-live="polite" hidden></div>
     <div id="greeting" class="greeting" role="status" aria-live="polite" hidden></div>
+    <div id="undo-bar" class="greeting undo-bar" role="status" aria-live="polite" hidden></div>
 
     <!-- Workspace: calendar and writer -->
     <main class="workspace">
@@ -162,13 +160,14 @@
             <button id="cal-prev" class="icon-btn" type="button" aria-label="Previous month">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
             </button>
-            <span id="cal-label" class="cal-label" aria-live="polite"></span>
+            <button id="cal-label" class="cal-label" type="button" aria-live="polite" aria-label="Jump to a month"></button>
             <button id="cal-next" class="icon-btn" type="button" aria-label="Next month">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
             </button>
+            <div id="cal-jump" class="cal-jump" role="dialog" aria-label="Jump to a month" hidden></div>
           </div>
           <div class="cal-weekdays" id="cal-weekdays" aria-hidden="true"></div>
-          <div class="cal-grid" id="cal-grid" role="grid"></div>
+          <div class="cal-grid" id="cal-grid"></div>
           <button id="cal-today" class="ghost cal-today" type="button">Jump to today</button>
         </div>
 
@@ -178,10 +177,12 @@
       <section class="writer-pane" aria-label="Your day">
         <div class="writer-head">
           <h1 id="writer-date" class="writer-date"></h1>
-          <span id="editor-sub" class="soft small"></span>
+          <div class="writer-sub">
+            <span id="editor-sub" class="soft small"></span>
+            <span id="word-count" class="soft small word-count"></span>
+          </div>
         </div>
 
-        <p id="writer-hint" class="writer-hint soft small" hidden></p>
         <div id="prompt-nudge" class="prompt-nudge" hidden></div>
 
         <textarea id="note" class="note" placeholder="Write about your day. As much or as little as you like."
@@ -198,15 +199,18 @@
             <span class="extra-label" id="day-marker-label">How was today? <span class="soft small">(optional)</span></span>
             <div class="day-marker" id="day-marker" role="group" aria-labelledby="day-marker-label"></div>
           </div>
-          <div class="extra-block">
-            <span class="extra-label" id="trend-marker-label">Easier or harder than usual? <span class="soft small">(optional)</span></span>
+          <div class="extra-block" id="trend-block" hidden>
+            <span class="extra-label" id="trend-marker-label">Easier or harder than usual?</span>
             <div class="day-marker" id="trend-marker" role="group" aria-labelledby="trend-marker-label"></div>
           </div>
+          <button id="extras-toggle" class="linklike extras-toggle" type="button" aria-expanded="false" aria-controls="extras-more">Add tags, a feeling, or what today held</button>
+          <div id="extras-more" class="extras-more" hidden>
           <div class="extra-block extra-tags">
             <label class="extra-label" for="tag-input">Tags <span class="soft small">(press Enter)</span></label>
             <div class="tag-editor">
               <div id="tag-list" class="tag-list"></div>
-              <input type="text" id="tag-input" autocomplete="off" placeholder="e.g. migraine, good news">
+              <input type="text" id="tag-input" autocomplete="off" list="tag-suggest" placeholder="e.g. migraine, good news">
+              <datalist id="tag-suggest"></datalist>
             </div>
           </div>
           <div class="extra-block extra-feelings">
@@ -225,6 +229,7 @@
             </div>
             <div id="activities-picker" class="feelings-picker" role="group" aria-labelledby="activities-label" hidden></div>
           </div>
+          </div>
         </div>
 
         <div class="writer-foot">
@@ -235,10 +240,15 @@
             <div id="tpl-menu" class="tpl-menu" role="menu" hidden></div>
           </div>
           <button id="guided-btn" class="ghost small" type="button" aria-pressed="false">Guided prompts</button>
-          <button id="delete-btn" class="danger small" type="button" hidden>Delete this day</button>
+          <div class="tpl-wrap">
+            <button id="more-btn" class="ghost small" type="button" aria-haspopup="menu" aria-expanded="false">More</button>
+            <div id="more-menu" class="tpl-menu" role="menu" hidden>
+              <button id="copy-day-btn" class="tpl-item" role="menuitem" type="button">Copy this day</button>
+              <button id="delete-btn" class="tpl-item tpl-item-danger" role="menuitem" type="button" hidden>Delete this day</button>
+            </div>
+          </div>
           <span class="writer-foot-spacer"></span>
           <span id="status" class="status" role="status" aria-live="polite"></span>
-          <button id="save-btn" class="primary" type="button">Save</button>
         </div>
       </section>
     </main>
@@ -261,12 +271,11 @@
     <div class="settings-layout">
       <nav class="settings-nav" id="settings-nav" aria-label="Settings categories">
         <button type="button" class="settings-nav-item is-active" data-cat="appearance">Appearance</button>
-        <button type="button" class="settings-nav-item" data-cat="reminders">Reminders</button>
+        <button type="button" class="settings-nav-item" data-cat="reminders">Reminders &amp; streak</button>
         <button type="button" class="settings-nav-item" data-cat="writing">Writing</button>
         <button type="button" class="settings-nav-item" data-cat="security">Lock &amp; encryption</button>
         <button type="button" class="settings-nav-item" data-cat="backups">Backups &amp; export</button>
-        <button type="button" class="settings-nav-item" data-cat="updates">Updates</button>
-        <button type="button" class="settings-nav-item" data-cat="data">Data</button>
+        <button type="button" class="settings-nav-item" data-cat="data">About &amp; data</button>
       </nav>
 
       <div class="settings-content" id="settings-content">
@@ -339,8 +348,7 @@
           </section>
           <section class="settings-block">
             <h3>Guided prompts</h3>
-            <p class="soft">Optional structured boxes you can turn on for a day (Food, Sleep, People…). They are off by default, because Flint is free-form writing first.</p>
-            <label class="toggle-row"><input type="checkbox" id="guided-toggle"><span>Show guided prompts under each day</span></label>
+            <p class="soft">Optional structured boxes you can turn on for a day (Food, Sleep, People…). They are off by default, because Flint is free-form writing first. Turn them on with the "Guided prompts" button under your writing.</p>
             <details class="prompts-editor-wrap">
               <summary class="linklike">Edit the guided prompts</summary>
               <p class="soft small">Rename, add, reorder or remove them. Removing one only hides it. Anything you already wrote under it stays saved and still exports.</p>
@@ -426,7 +434,7 @@
           </section>
         </div>
 
-        <div class="settings-cat" data-cat="updates" hidden>
+        <div class="settings-cat" data-cat="data" hidden>
           <section class="settings-block">
             <h3>Updates</h3>
             <p class="soft" id="version-line">Flint version</p>
@@ -436,9 +444,17 @@
             <div id="update-progress" class="update-progress" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" hidden><div id="update-progress-fill" class="update-progress-fill"></div></div>
             <div id="update-actions" class="btn-row settings-actions" hidden></div>
           </section>
-        </div>
 
-        <div class="settings-cat" data-cat="data" hidden>
+          <section class="settings-block">
+            <h3>Keyboard</h3>
+            <ul class="key-list soft">
+              <li><kbd>Ctrl</kbd> + <kbd>S</kbd> save this day now</li>
+              <li><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> focus mode on or off</li>
+              <li><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> add a quick note to today</li>
+              <li><kbd>Esc</kbd> leave focus mode, or close a panel</li>
+            </ul>
+          </section>
+
           <section class="settings-block">
             <h3>Where your words live</h3>
             <p class="soft">Everything is saved on this computer only:</p>

@@ -607,22 +607,6 @@ ipcMain.handle('theme:set', async (_e, theme) => {
   }
 });
 
-ipcMain.handle('accent:get', async () => {
-  try {
-    return { ok: true, accent: await store.getAccent() };
-  } catch (err) {
-    return { ok: false, accent: 'coral', error: err.message };
-  }
-});
-
-ipcMain.handle('accent:set', async (_e, accent) => {
-  try {
-    return { ok: true, accent: await store.setAccent(accent) };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
 ipcMain.handle('custom:get', async () => {
   try {
     const { custom, presets } = await store.getCustomTheme();
@@ -923,8 +907,8 @@ ipcMain.handle('security:check-pin', async (_e, pin) => {
   catch (err) { return { ok: false, valid: false, error: err.message }; }
 });
 
-// Copy a short string (the one-time recovery code) to the clipboard on request.
-// It is already in the renderer; this just reaches the OS clipboard from main.
+// Copy a string the renderer already holds (the one-time recovery code, or a
+// single day the writer asked for) to the clipboard. Write only, never read.
 ipcMain.handle('app:copy-text', async (_e, text) => {
   clipboard.writeText(String(text == null ? '' : text));
   return { ok: true };

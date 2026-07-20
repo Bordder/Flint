@@ -293,6 +293,20 @@ function renderDayMarker() {
     btn.classList.toggle('is-on', on); btn.setAttribute('aria-pressed', String(on));
   }
 }
+// Offer the tags already in use. Without this, "migraine" and "migraines" become
+// two tags that each stay below the threshold Patterns needs to show anything,
+// and nothing ever explains why.
+function renderTagSuggestions() {
+  const box = $('tag-suggest'); if (!box) return;
+  const counts = new Map();
+  for (const entry of Object.values(data.entries)) {
+    for (const t of entryTags(entry)) counts.set(t, (counts.get(t) || 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 50);
+  box.textContent = '';
+  for (const [tag] of sorted) { const o = document.createElement('option'); o.value = tag; box.append(o); }
+}
+
 function renderTags() {
   const list = $('tag-list'); list.textContent = '';
   currentTags.forEach((tag, i) => {
@@ -553,6 +567,8 @@ function loadEditor(dateIso) {
   const d = new Date(dateIso + 'T00:00:00'); calYear = d.getFullYear(); calMonth = d.getMonth();
   renderWriterHead();
   renderLookback();
+  setExtrasOpen(false); // each day opens tidy; syncExtras reopens it if this day needs it
+  renderTagSuggestions();
   updateEmptyHelpers();
   if (previewOn) renderMarkdownInto($('note-preview'), noteValue());
 }
@@ -595,20 +611,43 @@ function noteIsEmpty() { return !noteValue().trim(); }
 
 function updateEmptyHelpers() {
   const empty = noteIsEmpty();
-  renderWriterHint(empty);
   renderPromptNudge(empty);
+  renderWordCount();
+  syncExtras();
 }
 
-// One faint line when the page is blank: the whole point is that a single line
-// is a complete day, and the writer's own plan is there if they set one.
-function renderWriterHint(empty) {
-  const el = $('writer-hint'); if (!el) return;
-  if (!appReady || !empty) { el.hidden = true; el.textContent = ''; return; }
-  const isToday = currentDate === todayISO();
-  el.textContent = isToday && inStarterWeek()
-    ? 'You are just settling in. Even one line counts as a day.'
-    : 'Even one line counts as a day.';
-  el.hidden = false;
+// A running word count, quiet and never a target: it sits beside the date and
+// says nothing at all until there is something to count.
+function renderWordCount() {
+  const el = $('word-count'); if (!el) return;
+  const n = noteValue().split(/\s+/).filter(Boolean).length;
+  el.textContent = n ? `${n} ${n === 1 ? 'word' : 'words'}` : '';
+}
+
+/* The writer's optional extras. Only "How was today?" is on show: the follow-up
+   "compared with usual" question needs a baseline to compare against, so it
+   appears once the day has a marker, and tags, feelings and activities sit
+   behind one disclosure. A blank page should look like a blank page, not a
+   form. A day that already carries any of them opens the disclosure itself, so
+   nothing is ever hidden from the person who wrote it. */
+let extrasOpen = false;
+function setExtrasOpen(open) {
+  extrasOpen = !!open;
+  const more = $('extras-more'); if (more) more.hidden = !extrasOpen;
+  const btn = $('extras-toggle');
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(extrasOpen));
+    btn.textContent = extrasOpen ? 'Hide tags, feelings and activities' : 'Add tags, a feeling, or what today held';
+  }
+}
+function dayHasExtras() {
+  return currentTags.length > 0 || currentFeelings.length > 0 || currentActivities.length > 0;
+}
+// Never closes what the writer opened, and never hides a day's own content.
+function syncExtras() {
+  const trend = $('trend-block');
+  if (trend) trend.hidden = !(currentDay || currentTrend);
+  if (dayHasExtras() && !extrasOpen) setExtrasOpen(true);
 }
 
 function nudgePrompt() {
@@ -677,9 +716,9 @@ function maybeShowGreeting() {
   box.hidden = false;
 }
 
-// The one place words reach disk. Manual saves (the button, Ctrl+S) use the
-// defaults; autosave and the checkpoint saves pass options:
-//   quiet       - a soft "Saved just now" instead of the milestone/plain line
+// The one place words reach disk. Ctrl+S uses the defaults; autosave and the
+// checkpoint saves pass options:
+//   quiet       - say nothing at all unless the day crosses into "written"
 //   backup      - false on autosave ticks so the 30-copy ring is not churned
 //   allowDelete - false on autosave ticks so a mid-rewrite clear never deletes
 //                 the day on disk (a deliberate save/day-switch still does)
@@ -694,7 +733,7 @@ async function saveCurrent(opts = {}) {
     });
     return false;
   }
-  saving = true; $('save-btn').disabled = true;
+  saving = true;
   try {
     const existed = Object.prototype.hasOwnProperty.call(data.entries, currentDate);
     const previous = existed ? data.entries[currentDate] : undefined;
@@ -716,20 +755,19 @@ async function saveCurrent(opts = {}) {
       snapshot = currentState();
       lastSavedAt = Date.now();
       if (hasContent) pulseIndicator(); // a soft flash on the top-bar dot when a write lands
-      if (quiet) {
-        setStatus(hasContent ? 'Saved just now' : 'Removed');
-      } else {
-        // A quiet, warmer note the first time today crosses into "written", not on
-        // every save. Measured against the day as it was opened, so an autosave in
-        // between never quietly spends this moment. Understated: a nod, not a fanfare.
-        const madeTodayWritten = hasContent && isToday && !loadedTodayWritten;
-        setStatus(hasContent ? (madeTodayWritten ? 'Saved. That is today done.' : 'Saved.') : 'This day has been removed.');
+      // A quiet, warmer note the first time today crosses into "written", however
+      // that save happened. Routine saves now say nothing: the top-bar dot is the
+      // running report, so a status line would only be noise. Understated: a nod,
+      // not a fanfare.
+      const madeTodayWritten = hasContent && isToday && !loadedTodayWritten;
+      if (madeTodayWritten) {
+        setStatus('Saved. That is today done.');
+        loadedTodayWritten = true;
+      } else if (!quiet) {
+        setStatus(hasContent ? 'Saved.' : 'This day has been removed.');
       }
-      // Only a deliberate save consumes the milestone, so autosaving today's first
-      // line does not rob the writer of seeing it on their own save.
-      if (!quiet && hasContent && isToday) loadedTodayWritten = true;
       if (res.backupWarning) showNotice(res.backupWarning);
-      renderWriterHead(); renderCount(); renderCalendar(); updateEmptyHelpers();
+      renderWriterHead(); renderCount(); renderCalendar(); renderTagSuggestions(); updateEmptyHelpers();
       return true;
     }
     if (existed) data.entries[currentDate] = previous; else delete data.entries[currentDate];
@@ -742,7 +780,7 @@ async function saveCurrent(opts = {}) {
       title: 'Your words could not be saved', body: (res.error || 'Something went wrong writing to disk.') + '\n\nNothing has been lost. Everything you typed is still on the page, so please try saving again.', buttons: [{ label: 'Back to my writing', value: 'ok', kind: 'primary' }]
     });
     return false;
-  } finally { saving = false; $('save-btn').disabled = false; }
+  } finally { saving = false; }
 }
 
 // Autosave: a trailing debounce (a save shortly after you pause), a steady
@@ -913,14 +951,56 @@ async function deleteDay(date) {
     if (date === currentDate) loadEditor(currentDate);
     renderCount(); renderCalendar(); renderWriterHead();
     setStatus(`${longDate(date)} removed.`);
+    offerUndoDelete(date, previous);
   } finally { deleting = false; }
+}
+
+// Deleting is the one action in Flint with no way back from inside the app:
+// the copy in the backups folder is no help at all to someone whose journal is
+// encrypted, because they cannot read it. The removed entry is already in hand,
+// so hold on to it and offer it back until the writer moves on.
+let undoTimer = null;
+function clearUndoBar() {
+  clearTimeout(undoTimer); undoTimer = null;
+  const box = $('undo-bar'); if (!box) return;
+  box.hidden = true; box.textContent = '';
+}
+function offerUndoDelete(date, previous) {
+  const box = $('undo-bar'); if (!box || previous === undefined) return;
+  clearUndoBar();
+  box.textContent = '';
+  const p = document.createElement('p'); p.className = 'greeting-text';
+  p.textContent = `${longDate(date)} was removed.`;
+  const undo = document.createElement('button');
+  undo.type = 'button'; undo.className = 'linklike undo-btn'; undo.textContent = 'Undo';
+  undo.addEventListener('click', () => undoDelete(date, previous));
+  const close = document.createElement('button');
+  close.type = 'button'; close.className = 'greeting-close';
+  close.setAttribute('aria-label', 'Dismiss'); close.textContent = '×';
+  close.addEventListener('click', clearUndoBar);
+  box.append(p, undo, close);
+  box.hidden = false;
+  undoTimer = setTimeout(clearUndoBar, 30000);
+}
+async function undoDelete(date, previous) {
+  clearUndoBar();
+  if (data.entries[date] !== undefined) return; // something was written there since
+  data.entries[date] = previous;
+  const res = await safeCall(api.save, data);
+  if (!res.ok) {
+    delete data.entries[date];
+    setStatus('That day could not be put back. Nothing else has changed.', { error: true, sticky: true });
+    return;
+  }
+  if (date === currentDate) loadEditor(currentDate);
+  renderCount(); renderCalendar(); renderWriterHead();
+  setStatus(`${longDate(date)} is back.`);
 }
 
 /* guided prompts toggle */
 
 async function setGuidedMode(on, persist = true) {
   guided = on;
-  $('guided-toggle').checked = on;
   const gb = $('guided-btn'); gb.setAttribute('aria-pressed', String(on)); gb.classList.toggle('is-on', on);
   $('prompts-wrap').hidden = !on;
   if (on) {
@@ -1035,7 +1115,6 @@ function streakPopOutside(e) { if (!$('streak-pop').contains(e.target) && !$('st
 function renderStreakPop() {
   const pop = $('streak-pop'); pop.textContent = '';
   const { count, todayDone, todayOff } = computeStreak();
-  const total = Object.keys(data.entries).filter((d) => entryHasAnyContent(data.entries[d])).length;
   const tier = currentTier(count);
   const next = nextTier(count);
 
@@ -1085,10 +1164,8 @@ function renderStreakPop() {
   }
   pop.append(ladder);
 
-  const totalLine = document.createElement('p'); totalLine.className = 'soft small streak-total';
-  totalLine.textContent = total === 0 ? 'No days written yet.' : `Written on ${total} ${total === 1 ? 'day' : 'days'} in total.`;
-  pop.append(totalLine);
-
+  // The lifetime total lives in Patterns; repeating it here made the popover a
+  // second, smaller stats panel.
   if (todayOff && !todayDone) {
     const off = document.createElement('p'); off.className = 'soft small';
     off.textContent = 'Today is one of your days off, so your streak is safe.';
@@ -1099,6 +1176,48 @@ function renderStreakPop() {
     go.addEventListener('click', () => { closeStreakPop(); selectDay(todayISO()); });
     pop.append(go);
   }
+}
+
+/* jump to a month: paging one month at a time is fine for last week and useless
+   for last year, and the month label was already the obvious thing to click. */
+let jumpYear = 0;
+function toggleCalJump() {
+  const box = $('cal-jump');
+  if (!box.hidden) { closeCalJump(); return; }
+  jumpYear = calYear;
+  renderCalJump();
+  box.hidden = false;
+  $('cal-label').setAttribute('aria-expanded', 'true');
+  document.addEventListener('keydown', calJumpKey, true);
+  document.addEventListener('click', calJumpOutside, true);
+}
+function closeCalJump() {
+  const box = $('cal-jump'); if (!box || box.hidden) return;
+  box.hidden = true;
+  $('cal-label').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('keydown', calJumpKey, true);
+  document.removeEventListener('click', calJumpOutside, true);
+}
+function calJumpKey(e) { if (e.key === 'Escape') { e.preventDefault(); closeCalJump(); $('cal-label').focus(); } }
+function calJumpOutside(e) { if (!$('cal-jump').contains(e.target) && !$('cal-label').contains(e.target)) closeCalJump(); }
+function renderCalJump() {
+  const box = $('cal-jump'); box.textContent = '';
+  const head = document.createElement('div'); head.className = 'cal-jump-head';
+  const prev = document.createElement('button'); prev.type = 'button'; prev.className = 'icon-btn'; prev.setAttribute('aria-label', 'Previous year'); prev.textContent = '‹';
+  prev.addEventListener('click', () => { jumpYear--; renderCalJump(); });
+  const label = document.createElement('span'); label.className = 'cal-jump-year'; label.textContent = String(jumpYear);
+  const next = document.createElement('button'); next.type = 'button'; next.className = 'icon-btn'; next.setAttribute('aria-label', 'Next year'); next.textContent = '›';
+  next.addEventListener('click', () => { jumpYear++; renderCalJump(); });
+  head.append(prev, label, next);
+  const grid = document.createElement('div'); grid.className = 'cal-jump-grid';
+  for (let m = 0; m < 12; m++) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'cal-jump-month';
+    b.textContent = new Date(jumpYear, m, 1).toLocaleDateString('en-GB', { month: 'short' });
+    if (jumpYear === calYear && m === calMonth) b.classList.add('is-on');
+    b.addEventListener('click', () => { calYear = jumpYear; calMonth = m; closeCalJump(); renderCalendar(); });
+    grid.append(b);
+  }
+  box.append(head, grid);
 }
 
 function renderCalendar() {
@@ -1462,7 +1581,9 @@ function syncThemeChoice() {
   }
   const cust = $('custom-section'); if (cust) cust.classList.toggle('is-active', themePref === 'custom');
 }
-async function setThemePref(pref) { applyTheme(pref); await safeCall(api.setTheme, pref); }
+let themeToggleBack = '';   // named theme the top-bar toggle should restore next press
+let customDarkBase = 'dark'; // which dark base a custom theme last used
+async function setThemePref(pref) { themeToggleBack = ''; applyTheme(pref); await safeCall(api.setTheme, pref); }
 
 /* custom theme builder (base + two colours, savable as named presets) */
 function initCustomControls() {
@@ -1536,10 +1657,24 @@ function wireThemeChoice(container) {
     btn.addEventListener('click', () => setThemePref(btn.dataset.themePref));
   }
 }
-// The top-bar button flips between light and dark from whatever is showing now.
+// The top-bar button flips between light and dark, and must never quietly throw
+// away a chosen theme. A custom theme keeps its two colours and only flips its
+// base; any other named preset is remembered so the next press puts it straight
+// back. Choosing a theme in Settings clears that memory (see setThemePref).
 async function toggleTheme() {
-  const next = document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark';
-  await setThemePref(next);
+  const goingDark = document.documentElement.dataset.mode !== 'dark';
+  if (themePref === 'custom') {
+    if (!goingDark && customTheme.base !== 'light') customDarkBase = customTheme.base;
+    customTheme.base = goingDark ? customDarkBase : 'light';
+    syncCustomBase();
+    await persistCustom();
+    return;
+  }
+  const back = themeToggleBack;
+  if (back) { await setThemePref(back); return; } // setThemePref clears the memory
+  const remember = ['light', 'dark', 'system'].includes(themePref) ? '' : themePref;
+  await setThemePref(goingDark ? 'dark' : 'light');
+  themeToggleBack = remember;
 }
 // If the preference is 'system', follow the OS the moment it flips light/dark.
 darkMedia.addEventListener('change', () => { if (themePref === 'system') applyTheme('system'); });
@@ -1788,9 +1923,16 @@ function updatePrivacyEncryptionLine(encrypted) {
 // The footer reassurance line, worded to match the real encryption state.
 function updateFooter(encrypted) {
   const el = $('foot-text'); if (!el) return;
-  el.textContent = encrypted
-    ? 'Your notes are encrypted on this computer with your PIN. Your entries are never sent over the internet. The only times Flint goes online are to check for updates and to send feedback you choose to send.'
-    : 'Your notes stay on this computer. Your entries are never sent over the internet. The only times Flint goes online are to check for updates and to send feedback you choose to send. Turn on a PIN in Settings to encrypt them too.';
+  // One clause, not a paragraph. The full account is a click away in the privacy
+  // panel: repeating it under every page reads as anxiety rather than calm.
+  el.textContent = '';
+  const txt = document.createElement('span');
+  txt.textContent = encrypted ? 'Encrypted on this computer. ' : 'Stays on this computer. ';
+  const link = document.createElement('button');
+  link.type = 'button'; link.className = 'linklike'; link.id = 'privacy-link';
+  link.textContent = 'What Flint shares';
+  link.addEventListener('click', () => openPanel($('privacy-panel')));
+  el.append(txt, link);
 }
 
 async function lockAndGate() {
@@ -2638,6 +2780,76 @@ function closeTplMenu() {
 function tplMenuKey(e) { if (e.key === 'Escape') { e.preventDefault(); closeTplMenu(); $('tpl-btn').focus(); } }
 function tplMenuOutside(e) { if (!$('tpl-menu').contains(e.target) && !$('tpl-btn').contains(e.target)) closeTplMenu(); }
 
+/* the writer's overflow menu: the occasional action, and the destructive one,
+   kept off the main row so the foot is not a wall of buttons. */
+function toggleMoreMenu() {
+  const menu = $('more-menu');
+  if (!menu.hidden) { closeMoreMenu(); return; }
+  menu.hidden = false;
+  $('more-btn').setAttribute('aria-expanded', 'true');
+  document.addEventListener('keydown', moreMenuKey, true);
+  document.addEventListener('click', moreMenuOutside, true);
+}
+function closeMoreMenu() {
+  const menu = $('more-menu'); if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  $('more-btn').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('keydown', moreMenuKey, true);
+  document.removeEventListener('click', moreMenuOutside, true);
+}
+function moreMenuKey(e) { if (e.key === 'Escape') { e.preventDefault(); closeMoreMenu(); $('more-btn').focus(); } }
+function moreMenuOutside(e) { if (!$('more-menu').contains(e.target) && !$('more-btn').contains(e.target)) closeMoreMenu(); }
+
+// Copy one day as plain text. Every export is otherwise all-or-nothing, so
+// pasting a single day into a message meant producing a readable copy of the
+// entire journal first, which is exactly what the encryption is there to stop.
+function markerLabel(list, key) {
+  const m = list.find((x) => x.key === key);
+  return m ? (m.label || m.short) : '';
+}
+async function copyDay() {
+  const lines = [longDate(currentDate)];
+  const note = noteValue().trim();
+  if (note) lines.push('', note);
+  const day = markerLabel(MARKERS, currentDay);
+  const trend = markerLabel(TRAJ_MARKERS, currentTrend);
+  const extras = [];
+  if (day) extras.push(`How it was: ${day}`);
+  if (trend) extras.push(`Compared with usual: ${trend}`);
+  if (currentTags.length) extras.push(`Tags: ${currentTags.join(', ')}`);
+  if (currentFeelings.length) extras.push(`Feelings: ${currentFeelings.join(', ')}`);
+  if (currentActivities.length) extras.push(`Today held: ${currentActivities.join(', ')}`);
+  if (extras.length) lines.push('', ...extras);
+  const text = lines.join('\n');
+  if (await copyText(text)) setStatus('This day is on your clipboard.');
+  else setStatus('That day could not be copied.', { error: true });
+}
+// Electron's own clipboard is the reliable path: the page-level APIs below need
+// a trusted gesture and a permission that a packaged app cannot count on.
+async function copyText(text) {
+  if (api.copyText) {
+    const res = await safeCall(api.copyText, text);
+    if (res.ok) return true;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the textarea */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.pointerEvents = 'none';
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
 /* templates editor (settings) */
 
 let tplDraft = [];
@@ -2910,8 +3122,10 @@ async function init() {
   renderIndicator('saved');
   const asInd = $('autosave-ind');
   if (asInd) { const setTip = () => { asInd.title = autosaveHoverText(); }; asInd.addEventListener('mouseenter', setTip); asInd.addEventListener('focus', setTip); }
-  $('save-btn').addEventListener('click', () => saveCurrent());
-  $('delete-btn').addEventListener('click', () => deleteDay(currentDate));
+  $('delete-btn').addEventListener('click', () => { closeMoreMenu(); deleteDay(currentDate); });
+  $('copy-day-btn').addEventListener('click', () => { closeMoreMenu(); copyDay(); });
+  $('more-btn').addEventListener('click', toggleMoreMenu);
+  $('extras-toggle').addEventListener('click', () => setExtrasOpen(!extrasOpen));
   $('tag-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTagFromInput(); }
     else if (e.key === 'Backspace' && !e.target.value && currentTags.length) { currentTags.pop(); renderTags(); }
@@ -2942,6 +3156,7 @@ async function init() {
   $('cal-prev').addEventListener('click', () => gotoMonth(-1));
   $('cal-next').addEventListener('click', () => gotoMonth(1));
   $('cal-today').addEventListener('click', () => selectDay(todayISO()));
+  $('cal-label').addEventListener('click', toggleCalJump);
   let searchTimer = null;
   $('search-input').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(onSearch, 150); });
 
@@ -2951,7 +3166,6 @@ async function init() {
   for (const btn of document.querySelectorAll('#settings-nav .settings-nav-item')) btn.addEventListener('click', () => showSettingsCat(btn.dataset.cat));
   $('quick-btn').addEventListener('click', quickCapture);
   $('stats-btn').addEventListener('click', () => { renderStats(); openPanel($('stats-panel')); });
-  $('privacy-btn').addEventListener('click', () => openPanel($('privacy-panel')));
   $('lock-btn').addEventListener('click', relock);
   $('streak').addEventListener('click', toggleStreakPop);
   $('panel-scrim').addEventListener('click', closePanel);
@@ -2960,7 +3174,6 @@ async function init() {
   // settings panel controls
   buildThemeChoices();
   initCustomControls();
-  $('guided-toggle').addEventListener('change', () => setGuidedMode($('guided-toggle').checked));
   $('reminder-toggle').addEventListener('change', saveReminder);
   $('reminder-time').addEventListener('change', saveReminder);
   $('background-toggle').addEventListener('change', async () => {
@@ -3013,14 +3226,6 @@ async function init() {
   $('update-toggle').checked = updSetting.ok ? updSetting.enabled : true;
   $('update-toggle').addEventListener('change', async () => { const on = $('update-toggle').checked; await safeCall(api.setUpdateSetting, on); setUpdateSettingStatus(on ? 'Flint will check for a new version when it opens.' : 'Update checks are off, Flint stays fully offline.'); });
   $('update-check-btn').addEventListener('click', () => { setUpdatePanel('Checking…'); api.updateCheck(); });
-
-  // menu bridge (the close-guard bridges are registered near the top of init)
-  api.onMenu((action) => {
-    if (modalIsOpen()) return;
-    if (action === 'save') saveCurrent();
-    if (action === 'export') exportToFile();
-    if (action === 'export-pdf') exportToPdf();
-  });
 
   renderWriterHead();
 }

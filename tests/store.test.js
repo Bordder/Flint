@@ -366,13 +366,6 @@ async function main() {
     assert.strictEqual(await store.setAutosaveSeconds(999), 30, 'an off-list value falls back to 30');
   });
 
-  await test('accent get/set persists and rejects unknowns', async () => {
-    assert.strictEqual(await store.getAccent(), 'coral', 'defaults to coral');
-    assert.strictEqual(await store.setAccent('sage'), 'sage');
-    assert.strictEqual(await store.getAccent(), 'sage');
-    assert.strictEqual(await store.setAccent('nonsense'), 'coral', 'unknown value falls back to coral');
-  });
-
   await test('activities default, then save + normalise (trim, dedupe, drop blank)', async () => {
     const def = await store.loadActivities();
     assert.ok(Array.isArray(def) && def.length > 0, 'has a default set');

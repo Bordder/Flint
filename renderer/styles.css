@@ -1,5 +1,5 @@
-/* Hallmark · genre: modern-minimal · macrostructure: Workbench · theme: Coral-warm (custom OKLCH) · enrichment: none · designed-as-app
- * Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4
+﻿/* Hallmark Â· genre: modern-minimal Â· macrostructure: Workbench Â· theme: Coral-warm (custom OKLCH) Â· enrichment: none Â· designed-as-app
+ * Hallmark Â· pre-emit critique: P5 H5 E4 S5 R5 V4
  * Flint, a calm, private journal. Offline-only, so system font stacks (no web fonts).
  * Large type + loose leading on purpose: the reader gets eye strain. WCAG-AA throughout.
  * Interaction/visual layer redesigned; all element IDs preserved for app.js. */
@@ -27,8 +27,13 @@
   --danger:       oklch(51% 0.15 27);      /* destructive text */
   --danger-border: oklch(68% 0.11 30);
   --danger-soft:  oklch(95% 0.03 30);
+  /* --danger is tuned as a border/accent colour, and several palettes set it
+     too light to read as text. Pulling it most of the way to the theme's own
+     ink keeps the warning tone while clearing 4.5:1 on paper, paper-2 and
+     paper-3 in every theme. Declared once: the var()s below re-resolve against
+     whichever palette is active. Measured, not guessed. */
+  --danger-ink:   color-mix(in oklab, var(--danger) 38%, var(--ink));
   --mark:         oklch(90% 0.09 90);      /* search highlight */
-  --mark-ink:     oklch(30% 0.03 70);
 
   --notice-bg:    oklch(96% 0.04 92);
   --notice-line:  oklch(85% 0.07 92);
@@ -100,7 +105,6 @@
   --danger-border: oklch(50% 0.1 30);
   --danger-soft:  oklch(32% 0.05 30);
   --mark:         oklch(52% 0.1 90);
-  --mark-ink:     oklch(96% 0.02 90);
 
   --notice-bg:    oklch(34% 0.05 92);
   --notice-line:  oklch(48% 0.07 92);
@@ -121,19 +125,19 @@
    stays consistent. */
 
 /* Light-family palettes */
-:root[data-theme="sepia"]            { --paper:#f4ecd8; --paper-2:#fbf3df; --ink:#5b4636; --ink-3:#6e5c45; --rule:#e4d8bd; --accent:#984f1f; --accent-2:#6f7d4f; --accent-ink:#ffffff; --good:#5a7539; --danger:#a5432f; --mark:#e6c15c; --mark-ink:#4a3826; }
-:root[data-theme="rose-pine-dawn"]   { --paper:#faf4ed; --paper-2:#fffaf3; --ink:#575279; --ink-3:#6a6685; --rule:#dfdad9; --accent:#a8455f; --accent-2:#8058a0; --accent-ink:#ffffff; --good:#286983; --danger:#b4637a; --mark:#d08a1f; --mark-ink:#575279; }
-:root[data-theme="solarized-light"]  { --paper:#fdf6e3; --paper-2:#eee8d5; --ink:#4e6469; --ink-3:#5f7375; --rule:#e3dcc9; --accent:#1c6fb0; --accent-2:#218a80; --accent-ink:#ffffff; --good:#728a00; --danger:#dc322f; --mark:#b58900; --mark-ink:#3a4d50; }
-:root[data-theme="catppuccin-latte"] { --paper:#eff1f5; --paper-2:#e6e9ef; --ink:#4c4f69; --ink-3:#5c5f74; --rule:#ccd0da; --accent:#7a2fe0; --accent-2:#1a5fe0; --accent-ink:#ffffff; --good:#3a9426; --danger:#d20f39; --mark:#c47d16; --mark-ink:#eff1f5; }
+:root[data-theme="sepia"]            { --paper:#f4ecd8; --paper-2:#fbf3df; --ink:#5b4636; --ink-3:#6e5c45; --rule:#e4d8bd; --accent:#984f1f; --accent-2:#6f7d4f; --accent-ink:#ffffff; --good:#5a7539; --danger:#a5432f; --mark:#e6c15c; }
+:root[data-theme="rose-pine-dawn"]   { --paper:#faf4ed; --paper-2:#fffaf3; --ink:#575279; --ink-3:#6a6685; --rule:#dfdad9; --accent:#a8455f; --accent-2:#8058a0; --accent-ink:#ffffff; --good:#286983; --danger:#b4637a; --mark:#d08a1f; }
+:root[data-theme="solarized-light"]  { --paper:#fdf6e3; --paper-2:#eee8d5; --ink:#4e6469; --ink-3:#5f7375; --rule:#e3dcc9; --accent:#1c6fb0; --accent-2:#218a80; --accent-ink:#ffffff; --good:#728a00; --danger:#dc322f; --mark:#b58900; }
+:root[data-theme="catppuccin-latte"] { --paper:#eff1f5; --paper-2:#e6e9ef; --ink:#4c4f69; --ink-3:#5c5f74; --rule:#ccd0da; --accent:#7a2fe0; --accent-2:#1a5fe0; --accent-ink:#ffffff; --good:#3a9426; --danger:#d20f39; --mark:#c47d16; }
 
 /* Dark-family palettes */
-:root[data-theme="nord"]             { --paper:#2e3440; --paper-2:#3b4252; --ink:#e5e9f0; --ink-3:#93a0b5; --rule:#434c5e; --accent:#88c0d0; --accent-2:#81a1c1; --accent-ink:#2e3440; --good:#a3be8c; --danger:#bf616a; --mark:#ebcb8b; --mark-ink:#2e3440; }
-:root[data-theme="everforest"]       { --paper:#2d353b; --paper-2:#343f44; --ink:#d3c6aa; --ink-3:#9aa79d; --rule:#3d484d; --accent:#a7c080; --accent-2:#83c092; --accent-ink:#2d353b; --good:#a7c080; --danger:#e67e80; --mark:#dbbc7f; --mark-ink:#2d353b; }
-:root[data-theme="rose-pine"]        { --paper:#191724; --paper-2:#1f1d2e; --ink:#e0def4; --ink-3:#a29dbd; --rule:#26233a; --accent:#ebbcba; --accent-2:#c4a7e7; --accent-ink:#191724; --good:#9ccfd8; --danger:#eb6f92; --mark:#f6c177; --mark-ink:#191724; }
-:root[data-theme="catppuccin-mocha"] { --paper:#1e1e2e; --paper-2:#313244; --ink:#cdd6f4; --ink-3:#a6adc8; --rule:#45475a; --accent:#cba6f7; --accent-2:#89b4fa; --accent-ink:#1e1e2e; --good:#a6e3a1; --danger:#f38ba8; --mark:#f9e2af; --mark-ink:#1e1e2e; }
-:root[data-theme="tokyo-night"]      { --paper:#1a1b26; --paper-2:#24283b; --ink:#c0caf5; --ink-3:#9098c0; --rule:#292e42; --accent:#7aa2f7; --accent-2:#bb9af7; --accent-ink:#1a1b26; --good:#9ece6a; --danger:#f7768e; --mark:#e0af68; --mark-ink:#1a1b26; }
-:root[data-theme="gruvbox"]          { --paper:#282828; --paper-2:#3c3836; --ink:#ebdbb2; --ink-3:#b0a084; --rule:#504945; --accent:#fe8019; --accent-2:#8ec07c; --accent-ink:#282828; --good:#b8bb26; --danger:#fb4934; --mark:#fabd2f; --mark-ink:#282828; }
-:root[data-theme="true-black"]       { --paper:#000000; --paper-2:#141414; --ink:#f2ede6; --ink-3:#8f8f8f; --rule:#2a2a2a; --accent:#e0915a; --accent-2:#e6b45a; --accent-ink:#141414; --good:#7ec27e; --danger:#e07a6a; --mark:#e6c060; --mark-ink:#141414; }
+:root[data-theme="nord"]             { --paper:#2e3440; --paper-2:#3b4252; --ink:#e5e9f0; --ink-3:#93a0b5; --rule:#434c5e; --accent:#88c0d0; --accent-2:#81a1c1; --accent-ink:#2e3440; --good:#a3be8c; --danger:#bf616a; --mark:#ebcb8b; }
+:root[data-theme="everforest"]       { --paper:#2d353b; --paper-2:#343f44; --ink:#d3c6aa; --ink-3:#9aa79d; --rule:#3d484d; --accent:#a7c080; --accent-2:#83c092; --accent-ink:#2d353b; --good:#a7c080; --danger:#e67e80; --mark:#dbbc7f; }
+:root[data-theme="rose-pine"]        { --paper:#191724; --paper-2:#1f1d2e; --ink:#e0def4; --ink-3:#a29dbd; --rule:#26233a; --accent:#ebbcba; --accent-2:#c4a7e7; --accent-ink:#191724; --good:#9ccfd8; --danger:#eb6f92; --mark:#f6c177; }
+:root[data-theme="catppuccin-mocha"] { --paper:#1e1e2e; --paper-2:#313244; --ink:#cdd6f4; --ink-3:#a6adc8; --rule:#45475a; --accent:#cba6f7; --accent-2:#89b4fa; --accent-ink:#1e1e2e; --good:#a6e3a1; --danger:#f38ba8; --mark:#f9e2af; }
+:root[data-theme="tokyo-night"]      { --paper:#1a1b26; --paper-2:#24283b; --ink:#c0caf5; --ink-3:#9098c0; --rule:#292e42; --accent:#7aa2f7; --accent-2:#bb9af7; --accent-ink:#1a1b26; --good:#9ece6a; --danger:#f7768e; --mark:#e0af68; }
+:root[data-theme="gruvbox"]          { --paper:#282828; --paper-2:#3c3836; --ink:#ebdbb2; --ink-3:#b0a084; --rule:#504945; --accent:#fe8019; --accent-2:#8ec07c; --accent-ink:#282828; --good:#b8bb26; --danger:#fb4934; --mark:#fabd2f; }
+:root[data-theme="true-black"]       { --paper:#000000; --paper-2:#141414; --ink:#f2ede6; --ink-3:#8f8f8f; --rule:#2a2a2a; --accent:#e0915a; --accent-2:#e6b45a; --accent-ink:#141414; --good:#7ec27e; --danger:#e07a6a; --mark:#e6c060; }
 
 /* Shared derivation for every palette above. */
 :root[data-theme="sepia"], :root[data-theme="rose-pine-dawn"], :root[data-theme="solarized-light"],
@@ -280,7 +284,7 @@ button.primary:hover { background: var(--accent-2); border-color: var(--accent-2
 button.ghost { background: transparent; border-color: var(--control-border); }
 button.ghost:hover { background: var(--paper-3); }
 
-button.danger { background: transparent; border-color: var(--danger-border); color: var(--danger); }
+button.danger { background: transparent; border-color: var(--danger-border); color: var(--danger-ink); }
 button.danger:hover { background: var(--danger-soft); }
 
 button.linklike {
@@ -467,6 +471,18 @@ textarea:focus-visible { background: var(--paper-2); }
   color: var(--ink-3); font-size: var(--text-md);
 }
 .greeting-close:hover { background: var(--paper-2); color: var(--ink); }
+.undo-bar { border-left-color: var(--danger); }
+.undo-btn { flex: none; font-weight: 600; }
+
+/* keyboard reference */
+.key-list { list-style: none; margin: var(--space-sm) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2xs); }
+kbd {
+  display: inline-block; min-width: 1.6rem; text-align: center;
+  padding: 0.1rem 0.35rem; margin-right: 0.15rem;
+  border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: var(--radius-sm);
+  background: var(--paper-2); color: var(--ink);
+  font-family: var(--font-ui); font-size: var(--text-xs);
+}
 
 /* settings */
 
@@ -482,7 +498,7 @@ details.settings summary::marker { color: var(--ink-3); }
 .settings-block:first-of-type { border-top: none; padding-top: var(--space-md); }
 .settings-block h3 { margin-bottom: var(--space-xs); }
 .settings-block > p { margin-bottom: var(--space-xs); }
-.danger-block h3 { color: var(--danger); }
+.danger-block h3 { color: var(--danger-ink); }
 
 code {
   font-family: var(--font-mono); font-size: 0.85em;
@@ -610,7 +626,7 @@ select {
   }
 }
 
-/* ═══════════════════════════════════ note-app shell (v2) ═══════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• note-app shell (v2) â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .app { max-width: none; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
 
@@ -737,7 +753,6 @@ body.is-maximized #win-max .i-restore { display: inline; }
 .streak-ladder-item.current .streak-dot { box-shadow: 0 0 0 2px var(--paper-2), 0 0 0 3.5px var(--ink-3); }
 .streak-dot { width: 14px; height: 14px; border-radius: 50%; }
 .streak-dot-n { font-size: var(--text-xs); color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.streak-total { margin-top: var(--space-2xs); }
 .streak-pop .ghost { margin-top: var(--space-sm); }
 
 .settings-actions { margin-top: var(--space-sm); }
@@ -843,6 +858,8 @@ body.is-maximized #win-max .i-restore { display: inline; }
   background: transparent; color: var(--ink); font-size: var(--text-sm);
 }
 .tpl-item:hover { background: var(--paper-3); }
+.tpl-item-danger { color: var(--danger-ink); }
+.tpl-item-danger:hover { background: var(--danger-soft); color: var(--danger-ink); }
 .templates-list { display: flex; flex-direction: column; gap: var(--space-sm); margin: var(--space-md) 0; }
 .tpl-row {
   display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-xs);
@@ -1005,8 +1022,32 @@ body.is-focus .note { min-height: 60vh; }
 .fav-filter.is-on { background: var(--accent-soft); }
 .fav-filter.is-on .fav-star { color: var(--accent); }
 .calendar { display: flex; flex-direction: column; gap: var(--space-xs); }
-.cal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2xs); }
-.cal-label { font-family: var(--font-display); font-weight: 600; font-size: var(--text-md); }
+.cal-head { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2xs); }
+.cal-label {
+  font-family: var(--font-display); font-weight: 600; font-size: var(--text-md);
+  padding: var(--space-3xs) var(--space-2xs);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--ink);
+}
+.cal-label:hover { background: var(--paper-3); border-color: var(--rule); }
+
+/* jump to a month: paging one month at a time is useless for last year */
+.cal-jump {
+  position: absolute; top: calc(100% + 0.35rem); left: 50%; transform: translateX(-50%);
+  z-index: var(--z-raised); width: max-content; padding: var(--space-sm);
+  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-raised);
+}
+.cal-jump-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-bottom: var(--space-xs); }
+.cal-jump-year { font-family: var(--font-display); font-weight: 600; }
+.cal-jump-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3xs); }
+.cal-jump-month {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--ink); font-size: var(--text-sm);
+}
+.cal-jump-month:hover { background: var(--paper-3); }
+.cal-jump-month.is-on { background: var(--accent-soft); color: var(--ink); border-color: var(--accent); font-weight: 600; }
 .cal-weekdays, .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
 .cal-weekdays span { text-align: center; font-size: var(--text-xs); color: var(--ink-3); padding: var(--space-3xs) 0; }
 .cal-cell {
@@ -1067,7 +1108,17 @@ body.is-focus .note { min-height: 60vh; }
 .note:hover { border-color: var(--control-border); }
 
 /* blank-day helpers: the faint floor line and the optional prompt nudge */
-.writer-hint { margin: 0; color: var(--ink-3); }
+.writer-sub { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
+.word-count { margin-left: auto; }
+
+/* the optional extras sit behind one quiet disclosure, so a blank day reads as
+   a blank page rather than a form */
+.extras-toggle {
+  align-self: flex-start; padding: var(--space-3xs) 0;
+  color: var(--ink-3); font-size: var(--text-sm);
+}
+.extras-toggle:hover { color: var(--ink-2); }
+.extras-more { display: flex; flex-direction: column; gap: var(--space-md); }
 .prompt-nudge {
   display: flex; flex-direction: column; gap: var(--space-2xs);
   background: var(--paper-3); border: 1px solid var(--rule);

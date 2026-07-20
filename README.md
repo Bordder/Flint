@@ -67,8 +67,8 @@ file.
   you have to remember. A small dot by the wordmark shows whether everything is
   saved, and hovering it tells you when it last saved; you can set how often it
   saves, from every few seconds up to once an hour, in Settings → Writing. It also
-  saves the instant you leave a day, hide the window or close it. The Save button
-  and Ctrl+S are still there if you like to press them, but they are no longer needed.
+  saves the instant you leave a day, hide the window or close it. Ctrl+S is still
+  there if you like to press it, but there is nothing you have to remember to do.
 - **Your own prompts.** Settings → Writing lets you rename, add, reorder or remove
   optional guided boxes, to make Flint a health diary, a work log, a gratitude
   journal, whatever you like. Removing a prompt only hides it; anything you already

@@ -595,25 +595,6 @@ async function setTheme(theme) {
   return s.theme;
 }
 
-// The accent colour, a separate axis from the light/dark theme. 'coral' is the
-// original default (no override); the rest recolour the accent tokens only.
-const ACCENT_CHOICES = ['coral', 'sage', 'amber', 'blue', 'plum', 'rose'];
-function normaliseAccent(a) {
-  return ACCENT_CHOICES.includes(a) ? a : 'coral';
-}
-
-async function getAccent() {
-  const s = await loadSettings();
-  return normaliseAccent(s.accent);
-}
-
-async function setAccent(accent) {
-  const s = await loadSettings();
-  s.accent = normaliseAccent(accent);
-  await saveSettings(s);
-  return s.accent;
-}
-
 // The custom theme: a light or dark base plus two chosen colours, and any
 // number of saved named presets. Colours are validated as #rrggbb.
 const HEX6 = /^#[0-9a-fA-F]{6}$/;
@@ -1792,7 +1773,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getAccent, setAccent, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };
