@@ -50,6 +50,21 @@ Before you publish, make sure the build is sound:
 - Note the version's changes for the release body (a committed `CHANGELOG.md` at the
   repo root is worth starting, so the history survives outside the gitignored `dist`).
 
+**`latest.yml` is the file that must never be missing.** The updater finds the newest
+version from the releases feed, then fetches `latest.yml` from that release to learn
+the installer's filename, size and checksum. If the newest release has no `latest.yml`
+(or a `v<version>` tag was pushed ahead of its release), that fetch 404s and *every
+existing user* sees "couldn't check for updates" until you upload it. It is only about
+300 bytes sitting next to a 100 MB installer, so it is far and away the easiest of the
+three to forget. Upload all three together, then confirm the update path is actually
+live:
+
+```
+curl -sI https://github.com/Bordder/Flint/releases/download/v<version>/latest.yml
+```
+
+`200` means updates work; `404` means they are broken for everyone until you fix it.
+
 Then:
 
 1. Bump `"version"` in `package.json`.

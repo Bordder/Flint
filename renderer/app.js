@@ -1559,26 +1559,75 @@ function showUpdateBanner(message, buttons) {
   el.hidden = false;
 }
 function setUpdateSettingStatus(msg) { $('update-setting-status').textContent = msg || ''; }
+// The whole update flow is mirrored into Settings > Updates: message, a progress
+// bar and the buttons, all in place. Pressing "Check now" there used to clear the
+// status and put the only Download button on the main screen, so you had to leave
+// Settings to find it.
+function setUpdatePanel(message, opts = {}) {
+  setUpdateSettingStatus(message);
+  const bar = $('update-progress'), fill = $('update-progress-fill');
+  if (bar && fill) {
+    if (opts.percent == null) { bar.hidden = true; }
+    else {
+      const p = Math.max(0, Math.min(100, Math.round(opts.percent)));
+      bar.hidden = false; fill.style.width = p + '%'; bar.setAttribute('aria-valuenow', String(p));
+    }
+  }
+  const acts = $('update-actions');
+  if (acts) {
+    acts.textContent = '';
+    for (const b of (opts.actions || [])) {
+      const el = document.createElement('button'); el.type = 'button'; el.textContent = b.label;
+      if (b.kind) el.className = b.kind;
+      el.addEventListener('click', b.onClick);
+      acts.append(el);
+    }
+    acts.hidden = !(opts.actions && opts.actions.length);
+  }
+}
 function handleUpdateStatus({ status, info, manual }) {
   const version = info && info.version ? ` (version ${info.version})` : '';
+  const v = info && info.version ? info.version : '';
+  const startDownload = () => {
+    setUpdatePanel('Starting the download…', { percent: 0 });
+    showUpdateBanner('Downloading update…');
+    api.updateDownload();
+  };
   switch (status) {
-    case 'checking': if (manual) setUpdateSettingStatus('Checking…'); break;
+    case 'checking': setUpdatePanel('Checking…'); break;
     case 'available':
-      if (manual) setUpdateSettingStatus('');
+      setUpdatePanel(`Version ${v || 'a new version'} is available.`, {
+        actions: [{ label: 'Download', kind: 'primary', onClick: startDownload }]
+      });
       showUpdateBanner(`A new version of Flint is available${version}.`, [
-        { label: 'Download', kind: 'primary', onClick: () => { showUpdateBanner('Downloading update…'); api.updateDownload(); } }, { label: 'Not now', onClick: hideUpdateBanner }
+        { label: 'Download', kind: 'primary', onClick: startDownload }, { label: 'Not now', onClick: hideUpdateBanner }
       ]); break;
-    case 'progress': showUpdateBanner(`Downloading update… ${info && info.percent != null ? info.percent + '%' : ''}`.trim()); break;
+    case 'progress': {
+      const pct = info && info.percent != null ? info.percent : 0;
+      setUpdatePanel(`Downloading… ${pct}%`, { percent: pct });
+      showUpdateBanner(`Downloading update… ${pct}%`);
+      break;
+    }
     case 'ready':
+      setUpdatePanel(`Version ${v} is ready. Flint will close and reopen itself to finish.`, {
+        percent: 100, actions: [{ label: 'Install and restart', kind: 'primary', onClick: installUpdateFlow }]
+      });
       showUpdateBanner(`Update${version} downloaded and ready.`, [
         { label: 'Install and restart', kind: 'primary', onClick: installUpdateFlow }, { label: 'Later', onClick: hideUpdateBanner }
       ]); break;
-    case 'none': if (manual) setUpdateSettingStatus("You're on the latest version."); break;
-    case 'error': if (manual) setUpdateSettingStatus("Couldn't check just now, are you online?"); break;
-    case 'unsupported': if (manual) setUpdateSettingStatus('Updates apply to the installed app, not this test run.'); break;
+    case 'none': if (manual) setUpdatePanel("You're on the latest version."); break;
+    case 'error': if (manual) setUpdatePanel("Couldn't check just now, are you online?"); break;
+    case 'unsupported': if (manual) setUpdatePanel('Updates apply to the installed app, not this test run.'); break;
   }
 }
-async function installUpdateFlow() { if (!(await guardDirty('installing the update'))) return; showUpdateBanner('Installing… Flint will restart.'); await safeCall(api.updateInstall); }
+async function installUpdateFlow() {
+  if (!(await guardDirty('installing the update'))) return;
+  // quitAndInstall closes Flint and reopens it once the installer finishes, so the
+  // restart is handled for the writer rather than asked of them.
+  setUpdatePanel('Installing. Flint will close and reopen itself in a moment.', { percent: 100 });
+  showUpdateBanner('Installing… Flint will close and reopen itself.');
+  await safeCall(api.updateInstall);
+}
 
 /* lock gate (unlock + decrypt, or legacy window PIN) */
 
@@ -2963,7 +3012,7 @@ async function init() {
   const updSetting = await safeCall(api.getUpdateSetting);
   $('update-toggle').checked = updSetting.ok ? updSetting.enabled : true;
   $('update-toggle').addEventListener('change', async () => { const on = $('update-toggle').checked; await safeCall(api.setUpdateSetting, on); setUpdateSettingStatus(on ? 'Flint will check for a new version when it opens.' : 'Update checks are off, Flint stays fully offline.'); });
-  $('update-check-btn').addEventListener('click', () => { setUpdateSettingStatus('Checking…'); api.updateCheck(); });
+  $('update-check-btn').addEventListener('click', () => { setUpdatePanel('Checking…'); api.updateCheck(); });
 
   // menu bridge (the close-guard bridges are registered near the top of init)
   api.onMenu((action) => {

@@ -449,6 +449,10 @@ textarea:focus-visible { background: var(--paper-2); }
 .update-banner .update-text { flex: 1; min-width: 12rem; margin: 0; color: var(--ink); }
 .update-banner .btn-row { gap: var(--space-xs); }
 
+/* download progress shown in Settings > Updates, so the whole flow happens there */
+.update-progress { height: 0.5rem; margin-top: var(--space-xs); border: 1px solid var(--rule); border-radius: var(--radius-pill); background: var(--paper-3); overflow: hidden; }
+.update-progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.25s var(--ease-out); }
+
 /* welcome-back / fresh-start greeting: quieter than the update banner */
 .greeting {
   display: flex; align-items: center; gap: var(--space-sm);
