@@ -42,6 +42,11 @@ const vaultCrypto = require('./crypto');
 let sessionDk = null;        // the data key (Buffer) while unlocked; else null
 let sessionVault = null;     // the on-disk vault object, reused when re-sealing
 let encryptedOnDisk = false; // whether entries.json is currently a vault
+// Sticky for the process: set the moment we ever see a vault, cleared only by a
+// deliberate disableEncryption or a full reset. It exists so that a file going
+// missing or turning to plaintext underneath us can never be mistaken for the
+// user having switched encryption off. See the plaintext branch of doSaveData.
+let encryptedEverThisSession = false;
 
 // The data key is a Buffer, so wipe it rather than only dropping the reference.
 // A locked session should not leave the key lying in process memory.
@@ -67,6 +72,15 @@ function init(rootDir) {
   };
   fs.mkdirSync(P.backupsDir, { recursive: true });
   invalidateSettingsCache(); // a new root means the cached settings belong to the old one
+  // A different data root is a different journal, so nothing we learned about the
+  // last one applies to it. Carrying a data key, a cached vault or an "encrypted"
+  // belief across the switch is how a save ends up resealing one journal with
+  // another journal's key. In the app this runs once at startup and changes
+  // nothing; it matters wherever a root is swapped.
+  clearSessionDk();
+  sessionVault = null;
+  encryptedOnDisk = false;
+  encryptedEverThisSession = false;
   return { ...P };
 }
 
@@ -120,7 +134,7 @@ async function addMedia(sourcePath) {
   if (!encryptedOnDisk) {
     const s = await peekVaultState();
     if (s.state === 'vault') {
-      encryptedOnDisk = true;
+      encryptedOnDisk = encryptedEverThisSession = true;
       sessionVault = s.vault;
       return { ok: false, error: 'Your journal is encrypted, but Flint lost track of the key, so this photo was NOT saved and nothing on disk was touched. Close and reopen Flint, unlock it, and try again.' };
     }
@@ -235,13 +249,20 @@ async function writeFileAtomic(filePath, text) {
 // Decrypts a vault with the in-memory data key. Returns the data object, or a
 // { locked } result if we don't hold the key yet. Never quarantines the file.
 function openVault(vault) {
-  encryptedOnDisk = true;
-  sessionVault = vault;
-  if (!sessionDk) return { locked: true };
+  encryptedOnDisk = encryptedEverThisSession = true;
+  if (!sessionDk) { sessionVault = vault; return { locked: true }; }
   try {
-    return { data: vaultCrypto.openWithDk(vault, sessionDk), encrypted: true };
+    const data = vaultCrypto.openWithDk(vault, sessionDk);
+    sessionVault = vault; // only adopt a vault the held key actually opens
+    return { data, encrypted: true };
   } catch {
-    return { locked: true, warning: 'Your journal could not be decrypted with the current key.' };
+    // The key does not belong to this file. Keeping it would let the next save
+    // reseal a new body under wraps from a different key, and the result opens
+    // for neither the PIN nor the recovery code, permanently. Drop the key and
+    // ask again, exactly as securityStatus does on the same mismatch.
+    clearSessionDk();
+    sessionVault = null;
+    return { locked: true, warning: 'Your journal could not be decrypted with the current key. Please unlock it again.' };
   }
 }
 
@@ -374,7 +395,7 @@ async function doSaveData(data, opts = {}) {
     // would overwrite an encrypted journal in the clear. Refuse instead.
     const s = await peekVaultState();
     if (s.state === 'vault') {
-      encryptedOnDisk = true;
+      encryptedOnDisk = encryptedEverThisSession = true;
       sessionVault = s.vault;
       throw new Error(
         'Your journal is encrypted, but Flint lost track of the key, so this change was NOT saved ' +
@@ -385,6 +406,17 @@ async function doSaveData(data, opts = {}) {
       throw new Error(
         `Your journal file could not be checked (${s.error}), so nothing was written. ` +
         'Your words are still on the page. Please try saving again.'
+      );
+    }
+    // Belt and braces for the same drift: if encryption was ever on in this
+    // session, an 'absent' or 'plain' file means something outside Flint moved
+    // or replaced it. Writing plaintext here would silently undo encryption the
+    // user still believes is on, so refuse and keep the words on the page.
+    if (encryptedEverThisSession) {
+      throw new Error(
+        'Your journal is encrypted, but the file on disk is missing or is no longer encrypted, ' +
+        'so this change was NOT saved and nothing on disk was touched. Close and reopen Flint, ' +
+        'unlock it, and check your journal folder. Your words are still on the page.'
       );
     }
     json = JSON.stringify(data, null, 2);
@@ -1503,7 +1535,7 @@ async function requireVaultState() {
 async function securityStatus() {
   const s = await peekVaultState();
   if (s.state === 'vault') {
-    encryptedOnDisk = true;
+    encryptedOnDisk = encryptedEverThisSession = true;
     sessionVault = s.vault;
     // If the file changed underneath us, the key we hold may no longer belong to
     // it. Resealing a body under a key the wraps do not match would leave a
@@ -1513,9 +1545,17 @@ async function securityStatus() {
       catch { clearSessionDk(); }
     }
   } else if (s.state === 'plain' || s.state === 'absent') {
-    encryptedOnDisk = false;
-    sessionVault = null;
-    clearSessionDk();
+    // A session that is encrypted and unlocked must NOT be downgraded by the
+    // file going missing or unreadable underneath us. That is always an outside
+    // event (Flint verifies its own writes), and treating it as "encryption is
+    // off" drops the key and lets the next autosave write every entry in the
+    // clear while the UI still says encrypted. Only an explicit
+    // disableEncryption may turn encryption off.
+    if (!(encryptedOnDisk && sessionDk)) {
+      encryptedOnDisk = false;
+      sessionVault = null;
+      clearSessionDk();
+    }
   }
   // 'unknown' deliberately changes nothing: we could not read the file, so we
   // still believe whatever we last knew. Downgrading here would drop the key and
@@ -1560,7 +1600,7 @@ async function openVaultWith(vault, opener, secretName) {
   void data;
   setSessionDk(dk);
   sessionVault = vault;
-  encryptedOnDisk = true;
+  encryptedOnDisk = encryptedEverThisSession = true;
   return { ok: true };
 }
 
@@ -1642,6 +1682,25 @@ async function purgeExternalPlaintextBackups() {
 
 // Turn encryption on for a currently-plaintext journal. Returns the one-time
 // recovery code, which the UI must show the user once and never store.
+// Is there anything on disk that might still hold journal entries? Used before
+// encrypting an empty journal, because that operation deletes the plaintext
+// copies and there is no way back from it. Describes what it found in the
+// user's own words, or returns '' when the data folder really is empty.
+async function recoverableCopiesExist() {
+  const found = [];
+  try {
+    const names = await fsp.readdir(P.dataDir);
+    const quarantined = names.filter((n) => /^entries\.json\.corrupt-/.test(n)).length;
+    if (quarantined) found.push(`${quarantined} set-aside ${quarantined === 1 ? 'copy' : 'copies'} of your journal`);
+  } catch { /* an unreadable data folder is handled by the caller's other checks */ }
+  try {
+    const backup = await newestValidBackup();
+    const entries = backup && backup.parsed && backup.parsed.entries ? Object.keys(backup.parsed.entries).length : 0;
+    if (entries) found.push(`a backup holding ${entries} ${entries === 1 ? 'day' : 'days'}`);
+  } catch { /* backups are best effort here */ }
+  return found.join(' and ');
+}
+
 function enableEncryption(pin) {
   return runExclusive(async () => {
     const pre = await requireVaultState();
@@ -1649,13 +1708,46 @@ function enableEncryption(pin) {
     if (typeof pin !== 'string' || pin.length < 4) {
       return { ok: false, error: 'Choose a PIN of at least 4 characters.' };
     }
+    // Refuse unless we can PROVE we captured the real journal. The old code fell
+    // back to emptyData() here, which looks harmless because emptyData() is
+    // valid, and was catastrophic: after loadData quarantines an unreadable
+    // entries.json the file is absent, so a second read returns an empty journal
+    // with no warning. We would then seal a vault around nothing and, in the
+    // tidy-up below, delete the plaintext backups AND the quarantined original,
+    // reporting success. Encrypting nothing is never worth doing, and it must
+    // never be the step that destroys the copies.
     const loaded = await loadData();
-    const data = loaded.data && isValidData(loaded.data) ? loaded.data : emptyData();
+    if (loaded.locked) {
+      return { ok: false, error: 'Your journal is locked, so encryption was not changed.' };
+    }
+    if (!loaded.data || !isValidData(loaded.data)) {
+      return { ok: false, error: 'Your journal could not be read, so nothing was encrypted and nothing was changed. Please reopen Flint and check your journal is showing before turning encryption on.' };
+    }
+    if (loaded.warning) {
+      // loadData recovered from a backup or started empty. Either way the file
+      // it would encrypt is not the one the user thinks it is, and the purge
+      // below would remove the copies that still hold the original.
+      return { ok: false, error: `Encryption was not turned on, and nothing was changed. ${loaded.warning} Please make sure your journal is showing the days you expect, save once, then turn encryption on.` };
+    }
+    const data = loaded.data;
+    // The warning check above is not enough on its own. After loadData
+    // quarantines an unreadable entries.json the file is ABSENT, so the next
+    // read takes the ENOENT path and returns an empty journal with no warning
+    // at all, indistinguishable from a fresh install. Encrypting nothing is
+    // harmless on a fresh install and catastrophic here, because the tidy-up
+    // below deletes the very copies that still hold the writing. So when the
+    // journal is empty, refuse if anything on disk looks like it holds more.
+    if (!Object.keys(data.entries || {}).length) {
+      const rescue = await recoverableCopiesExist();
+      if (rescue) {
+        return { ok: false, error: `Encryption was not turned on, and nothing was changed. Your journal is showing no entries, but Flint can still see ${rescue} on disk, so it will not encrypt an empty journal and remove them. Please reopen Flint and check your days are showing first.` };
+      }
+    }
     const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, pin);
     await writeMainAndBackup(JSON.stringify(vault, null, 2));
     setSessionDk(dk);
     sessionVault = vault;
-    encryptedOnDisk = true;
+    encryptedOnDisk = encryptedEverThisSession = true;
 
     // Everything past this point is tidying, and the vault is already committed.
     // If any of it throws, the recovery code would be lost forever while the
@@ -1716,6 +1808,9 @@ function disableEncryption(pin) {
     clearSessionDk();
     sessionVault = null;
     encryptedOnDisk = false;
+    // A deliberate turn-off is the only thing allowed to clear the sticky flag,
+    // otherwise plaintext saves would be refused for the rest of the session.
+    encryptedEverThisSession = false;
     return { ok: true };
   });
 }
@@ -1783,7 +1878,7 @@ async function rotateToNewKey(data, oldDk, newPin) {
   const removed = await rekeyBackups(oldDk, dk, vault);
   setSessionDk(dk);
   sessionVault = vault;
-  encryptedOnDisk = true;
+  encryptedOnDisk = encryptedEverThisSession = true;
   return { ok: true, recoveryCode, removedBackups: removed };
 }
 
@@ -1859,6 +1954,7 @@ function resetAll() {
     clearSessionDk();
     sessionVault = null;
     encryptedOnDisk = false;
+    encryptedEverThisSession = false; // starting over from a blank install
     invalidateSettingsCache(); // settings.json is about to be deleted underneath the cache
     try {
       await fsp.rm(P.dataDir, { recursive: true, force: true });

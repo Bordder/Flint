@@ -456,6 +456,60 @@ async function main() {
     assert.strictEqual(loaded.entries['2026-06-01'].other, 'still here after PIN removal');
   });
 
+  // C1. The worst bug found in the audit: enabling encryption straight after a
+  // quarantined load sealed a vault around NOTHING, then deleted the plaintext
+  // backups and the quarantined original, and reported success.
+  await test('C1: encryption refuses to seal an empty journal while copies still exist', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-c1-'));
+    const PX = store.init(tmpRoot);
+    try {
+      // a real journal with real writing, plus the backup that save() makes
+      const data = store.emptyData();
+      data.entries['2026-03-01'] = { note: 'Words that must not be destroyed.', updatedAt: 'x' };
+      await store.saveData(data);
+      await store.saveData(data); // a second save guarantees a backup file
+
+      // corrupt the main file, then load: this quarantines it and recovers a backup
+      fs.writeFileSync(PX.dataFile, '{ this is not json', 'utf8');
+      const recovered = await store.loadData();
+      assert.ok(recovered.warning, 'the load warns that it fell back to a backup');
+      assert.strictEqual(Object.keys(recovered.data.entries).length, 1, 'the backup still holds the day');
+      assert.ok(!fs.existsSync(PX.dataFile), 'the unreadable file was renamed aside, so entries.json is now absent');
+      const quarantined = fs.readdirSync(PX.dataDir).filter((n) => n.includes('.corrupt-'));
+      assert.strictEqual(quarantined.length, 1, 'the original was set aside, not deleted');
+
+      // the user now turns on encryption, before saving. This must refuse.
+      const res = await store.enableEncryption('9182');
+      assert.strictEqual(res.ok, false, 'encryption is refused rather than sealing an empty journal');
+      assert.ok(!res.recoveryCode, 'no recovery code is handed out for a refused operation');
+
+      // and, crucially, nothing was destroyed
+      assert.strictEqual(
+        fs.readdirSync(PX.dataDir).filter((n) => n.includes('.corrupt-')).length, 1,
+        'the quarantined original is still there'
+      );
+      const backups = fs.readdirSync(PX.backupsDir).filter((n) => /^entries-.*\.json$/.test(n));
+      assert.ok(backups.length >= 1, 'the readable backups were not purged');
+      const stillThere = JSON.parse(fs.readFileSync(path.join(PX.backupsDir, backups[0]), 'utf8'));
+      assert.strictEqual(stillThere.entries['2026-03-01'].note, 'Words that must not be destroyed.');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('C1: a genuinely fresh install can still turn encryption on', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-c1b-'));
+    store.init(tmpRoot);
+    try {
+      const res = await store.enableEncryption('4471');
+      assert.strictEqual(res.ok, true, 'an empty data folder with no copies is allowed');
+      assert.ok(res.recoveryCode, 'a recovery code is issued');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
   // ----------------------------------------------------------- encryption
   // These run last and in their own root, because turning encryption on
   // changes module-level session state (the in-memory data key).
@@ -718,6 +772,91 @@ async function main() {
       d.entries['2026-12-02'] = { note: 'must not clobber the vault' };
       await assert.rejects(() => store.saveData(d), /lost track of the key/i, 'refused');
       assert.strictEqual(JSON.parse(fs.readFileSync(PG.dataFile, 'utf8')).flintEncrypted, 1, 'the vault is untouched');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  // H6. A failed decrypt used to leave the session key in place while adopting
+  // the file it could not open, so the next save resealed a new body under wraps
+  // from a different key: a journal neither the PIN nor the recovery code opens.
+  await test('H6: a vault the held key cannot open drops the key instead of adopting it', async () => {
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h6a-'));
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h6b-'));
+    try {
+      // journal B, encrypted under its own PIN, gives us a foreign vault
+      const PB = store.init(rootB);
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('bbbb1111')).ok);
+      const foreignVault = fs.readFileSync(PB.dataFile);
+
+      // journal A, encrypted and unlocked, with real writing in it
+      const PA = store.init(rootA);
+      const d = store.emptyData();
+      d.entries['2026-08-08'] = { note: 'Journal A words.', updatedAt: 'x' };
+      await store.saveData(d);
+      assert.ok((await store.enableEncryption('aaaa2222')).ok);
+      assert.strictEqual((await store.securityStatus()).unlocked, true, 'A starts unlocked');
+
+      // B's vault appears where A's used to be (a restore from the wrong folder)
+      fs.writeFileSync(PA.dataFile, foreignVault);
+
+      const res = await store.loadData();
+      assert.strictEqual(res.locked, true, 'the foreign vault reports locked, not corrupt');
+      assert.strictEqual(
+        (await store.securityStatus()).unlocked, false,
+        'the key that could not open it was dropped, so the session is locked'
+      );
+      // and the save that would have destroyed it is refused
+      await assert.rejects(() => store.saveData(d), /locked/i, 'saving is refused while locked');
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(PA.dataFile, 'utf8')).flintEncrypted, 1,
+        'the foreign vault is left exactly as found'
+      );
+    } finally {
+      store.init(root);
+    }
+  });
+
+  // H7. An encrypted, unlocked session must not be downgraded by the file going
+  // missing underneath it. That is always an outside event, and treating it as
+  // "encryption is off" let the next autosave write every entry in the clear.
+  await test('H7: losing the file does not silently turn encryption off', async () => {
+    const rootH = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h7-'));
+    const PH = store.init(rootH);
+    try {
+      const d = store.emptyData();
+      d.entries['2026-09-09'] = { note: 'Must never be written in the clear.', updatedAt: 'x' };
+      await store.saveData(d);
+      assert.ok((await store.enableEncryption('hhhh3333')).ok, 'encrypted and unlocked');
+
+      // something outside Flint removes the journal file
+      fs.unlinkSync(PH.dataFile);
+
+      const st = await store.securityStatus();
+      assert.strictEqual(st.encrypted, true, 'still believes it is encrypted');
+      assert.strictEqual(st.unlocked, true, 'and still holds the key');
+
+      // A save now takes the encrypted branch and restores the vault. The point
+      // is that it is a vault: before the fix securityStatus had dropped the key
+      // and this same save wrote every entry as readable JSON.
+      await store.saveData(d);
+      const written = JSON.parse(fs.readFileSync(PH.dataFile, 'utf8'));
+      assert.strictEqual(written.flintEncrypted, 1, 'the journal was rewritten encrypted, not in the clear');
+      assert.ok(!JSON.stringify(written).includes('Must never be written in the clear'), 'no entry text on disk');
+
+      // The other half of the same hazard: loadData's ENOENT path clears
+      // encryptedOnDisk, which would send the next save down the plaintext
+      // branch. The sticky session flag has to catch that.
+      fs.unlinkSync(PH.dataFile);
+      const reloaded = await store.loadData();
+      assert.deepStrictEqual(reloaded.data.entries, {}, 'a missing file reads as empty');
+      await assert.rejects(
+        () => store.saveData(d),
+        /missing or is no longer encrypted/i,
+        'a plaintext write is refused rather than silently undoing encryption'
+      );
+      assert.ok(!fs.existsSync(PH.dataFile), 'nothing was written in the clear');
     } finally {
       store.init(root);
     }
