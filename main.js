@@ -247,15 +247,28 @@ async function shouldOfferTray() {
   }
 }
 
+// Waits for a HUMAN, so it is not on the 2500ms budget askRendererDirty uses for
+// an automated reply. At 2.5 seconds the dialog flashed up and the app closed
+// before the title could be read, and because a dismissal counts as an answer,
+// the question was then never asked again. The only hard deadline that matters
+// is the window going away: without it this would hang a close forever.
 function askTrayOffer() {
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    const handler = (_e, choice) => { clearTimeout(timer); finish(choice === 'tray' ? 'tray' : 'full'); };
-    // Silence must never be taken as consent to a background process plus a tray
-    // icon, so a renderer that does not answer closes fully.
-    const timer = setTimeout(() => { ipcMain.removeListener('app:tray-answer', handler); finish('full'); }, 2500);
-    ipcMain.once('app:tray-answer', handler);
+    const cleanup = () => {
+      clearTimeout(timer);
+      ipcMain.removeListener('app:tray-answer', handler);
+      if (win && !win.isDestroyed()) win.removeListener('closed', onGone);
+    };
+    const finish = (v, answered) => { if (!done) { done = true; cleanup(); resolve({ choice: v, answered }); } };
+    const handler = (_e, choice) => finish(choice === 'tray' ? 'tray' : 'full', true);
+    const onGone = () => finish('full', false);
+    // A very long backstop, not a UI deadline. Silence must never be taken as
+    // consent to a background process plus a tray icon, so it resolves to
+    // "close fully" and, because nobody answered, the question stays unasked.
+    const timer = setTimeout(() => finish('full', false), 2 * 60 * 1000);
+    ipcMain.on('app:tray-answer', handler);
+    if (win && !win.isDestroyed()) win.once('closed', onGone);
     win.webContents.send('app:tray-offer');
   });
 }
@@ -439,11 +452,13 @@ function createWindow() {
         if (!isDirty) {
           if (await shouldOfferTray()) {
             trayOfferPending = true;
-            let choice = 'full';
-            try { choice = await askTrayOffer(); } catch { choice = 'full'; }
-            // A dismissed question is an answer: record it either way so this is
-            // asked exactly once, however it ended.
-            try { await store.setTrayAsked(true); } catch { /* best effort */ }
+            let choice = 'full', answered = false;
+            try { ({ choice, answered } = await askTrayOffer()); } catch { choice = 'full'; answered = false; }
+            // Only a real answer, including a deliberate dismissal, uses the
+            // question up. A timeout or a window that vanished is not an answer,
+            // and marking it as one is how the question disappeared forever
+            // after flashing past unread.
+            if (answered) { try { await store.setTrayAsked(true); } catch { /* best effort */ } }
             trayOfferPending = false;
             if (choice === 'tray') {
               try { await store.setRunInBackground(true); } catch { /* best effort */ }

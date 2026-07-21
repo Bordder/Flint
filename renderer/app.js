@@ -787,24 +787,37 @@ async function saveCurrent(opts = {}) {
   }
   saving = true;
   try {
-    const existed = Object.prototype.hasOwnProperty.call(data.entries, currentDate);
-    const previous = existed ? data.entries[currentDate] : undefined;
+    // Capture the page as it is NOW, in the same breath as the entry we are
+    // about to write, and pin the date too. The snapshot used to be re-read from
+    // the DOM after the await, so anything typed while the save was in flight
+    // was recorded as saved without ever reaching disk: isDirty() then said
+    // clean, autosave stood down, and the close guard let those words go with no
+    // prompt. Autosave is a fixed ceiling, not a debounce, so it is designed to
+    // fire mid-sentence and this was reachable every time it did.
+    const savingDate = currentDate;
+    const state = currentState();
+    const existed = Object.prototype.hasOwnProperty.call(data.entries, savingDate);
+    const previous = existed ? data.entries[savingDate] : undefined;
     const entry = buildEntry(previous);
     const hasContent = entryHasAny(entry);
-    const isToday = currentDate === todayISO();
+    const isToday = savingDate === todayISO();
     if (!hasContent) {
-      if (!existed) { if (!quiet) setStatus('Nothing written for this day yet.'); return true; }
+      // Refresh the snapshot even here, or a page holding only whitespace stays
+      // "unsaved" for the whole sitting, re-arming a no-op save every interval.
+      if (!existed) { if (!quiet) setStatus('Nothing written for this day yet.'); if (savingDate === currentDate) snapshot = state; return true; }
       // A cleared note pausing mid-rewrite must not delete the day out from under
       // the writer. Only a deliberate save or day-switch removes an emptied day.
       if (!allowDelete) return true;
-      delete data.entries[currentDate];
+      delete data.entries[savingDate];
     } else {
       entry.updatedAt = new Date().toISOString();
-      data.entries[currentDate] = entry;
+      data.entries[savingDate] = entry;
     }
     const res = await safeCall(api.save, data, { backup });
     if (res.ok) {
-      snapshot = currentState();
+      // Only claim the page is saved if it is still the page we saved. A day
+      // switch during the write would otherwise mark the new day clean.
+      if (savingDate === currentDate) snapshot = state;
       lastSavedAt = Date.now();
       if (hasContent) pulseIndicator(); // a soft flash on the top-bar dot when a write lands
       // A quiet, warmer note the first time today crosses into "written", however
@@ -821,12 +834,13 @@ async function saveCurrent(opts = {}) {
       // Tell main which day now has words in it, so the evening reminder does not
       // nag about a day already written. In tray mode the journal is usually
       // locked by then, and a locked journal cannot be checked. A date only.
-      if (hasContent && isToday && api.noteWritten) api.noteWritten(currentDate);
+      if (hasContent && isToday && api.noteWritten) api.noteWritten(savingDate);
       if (res.backupWarning) showNotice(res.backupWarning);
       renderWriterHead(); renderCount(); renderCalendar(); renderTagSuggestions(); updateEmptyHelpers();
       return true;
     }
-    if (existed) data.entries[currentDate] = previous; else delete data.entries[currentDate];
+    // Roll back the day we actually touched, not whichever day is open now.
+    if (existed) data.entries[savingDate] = previous; else delete data.entries[savingDate];
     if (silentError) {
       setStatus('Not saved yet. Your words are safe on the page and will save on your next pause.', { error: true, sticky: true });
       return false;
@@ -1055,11 +1069,28 @@ function offerUndoDelete(date, previous) {
 }
 async function undoDelete(date, previous) {
   clearUndoBar();
-  if (data.entries[date] !== undefined) return; // something was written there since
+  const nowThere = data.entries[date];
+  if (nowThere !== undefined && entryHasAnyContent(nowThere)) {
+    // Clicking Undo is often enough to recreate the day by itself: the click
+    // blurs the note, which flushes an autosave, which writes the entry back
+    // before this handler runs. Returning in silence made Undo look broken in
+    // exactly the case it is most used, so ask rather than do nothing. Someone
+    // pressing Undo is asking for the older version.
+    const choice = await showModal({
+      title: `Put ${longDate(date)} back?`,
+      body: 'Something has been written on that day since you deleted it.\n\nPutting the older version back will replace what is there now.',
+      buttons: [
+        { label: 'Put the older version back', value: 'replace', kind: 'danger' },
+        { label: 'Leave it as it is', value: 'keep', kind: 'primary' }
+      ],
+      focusValue: 'keep'
+    });
+    if (choice !== 'replace') { setStatus('Left as it is.'); return; }
+  }
   data.entries[date] = previous;
   const res = await safeCall(api.save, data);
   if (!res.ok) {
-    delete data.entries[date];
+    if (nowThere === undefined) delete data.entries[date]; else data.entries[date] = nowThere;
     setStatus('That day could not be put back. Nothing else has changed.', { error: true, sticky: true });
     return;
   }
@@ -1538,7 +1569,19 @@ async function importJson() {
   if (res.canceled) return;
   if (res.added > 0) {
     const load = await safeCall(api.load);
-    if (load.ok && !load.locked) { data = load.data || data; loadEditor(currentDate); renderCount(); renderCalendar(); }
+    if (load.ok && !load.locked && load.data) {
+      data = load.data; loadEditor(currentDate); renderCount(); renderCalendar();
+    } else {
+      // The days ARE on disk, but this page is still holding the copy from
+      // before the import. Saying "Added N days" here was doubly wrong: the
+      // calendar would show none of them, and the next ordinary save would write
+      // this stale copy back, deleting the days we just said we added. Stop
+      // saving until the page and the disk agree again.
+      loadFailed = true;
+      showLoadErrorNotice('the imported days were written, but the page could not be refreshed.');
+      setExportStatus(`Added ${res.added} ${res.added === 1 ? 'day' : 'days'} to your journal file, but Flint could not refresh this page. Close and reopen Flint to see them. Saving is off until then, so nothing can overwrite them.`, true);
+      return;
+    }
   }
   const kept = res.skipped ? ` ${res.skipped} ${res.skipped === 1 ? 'day was' : 'days were'} already written, so ${res.skipped === 1 ? 'it was' : 'they were'} left alone.` : '';
   setExportStatus(res.added === 0 ? `Nothing new to add.${kept}` : `Added ${res.added} ${res.added === 1 ? 'day' : 'days'}.${kept}`);
@@ -1557,6 +1600,14 @@ function showLoadErrorNotice(errorMsg) {
 async function retryLoad() {
   const res = await safeCall(api.load);
   if (!res.ok) { showLoadErrorNotice(res.error); return; }
+  // A locked journal answers ok:true with no data. Treating that as success
+  // cleared the notice and re-enabled saving while `data` was null, so every
+  // autosave tick threw and the writer was told "Saving is back on" while
+  // nothing at all was being written.
+  if (res.locked || !res.data) {
+    showLoadErrorNotice('it is locked, so it could not be opened. Unlock it with your PIN first.');
+    return;
+  }
   loadFailed = false; data = res.data; paths = res.paths;
   if (paths) $('data-path').textContent = paths.dataFile;
   $('load-notice').textContent = ''; $('load-notice').hidden = true;
