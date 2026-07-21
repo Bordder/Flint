@@ -2101,6 +2101,10 @@ function hasLock() { return encryptedNow || windowPinNow; }
 
 function resetAutoLockTimer() {
   clearTimeout(autoLockTimer);
+  // Null it as well as clear it. The timer is genuinely cancelled either way,
+  // but leaving a spent id here makes the variable read as "a lock is pending"
+  // when auto-lock is off, which is a trap for anyone who tests it later.
+  autoLockTimer = null;
   if (!hasLock() || !autoLockMinutes || !appReady) return;
   autoLockTimer = setTimeout(autoLockNow, autoLockMinutes * 60 * 1000);
 }
