@@ -175,30 +175,37 @@ async function removeMedia(id) {
 // Returns the names it could NOT convert. Callers must not report success while
 // this list is non-empty: a photo left in the clear beside an encrypted journal
 // breaks the promise, and one left encrypted after the key is gone is lost.
-async function rewriteMediaEncryption(dk, encrypt) {
+// Two phases, for the same reason as the rekey: converting in place meant a
+// failure partway left some photos already converted while the caller reported
+// "Nothing was changed". Phase one writes sidecars and touches no original, so
+// giving up really is a no-op. Callers commit only once they are ready.
+async function rewriteMediaPrepare(dk, encrypt) {
+  const prepared = [];
   const failed = [];
   let names;
-  try { names = await fsp.readdir(P.mediaDir); } catch { return failed; }
+  try { names = await fsp.readdir(P.mediaDir); } catch { return { prepared, failed }; }
   // Sweep any half-written .tmp leftovers first: they hold raw image bytes and
   // match no id pattern, so nothing else would ever encrypt or remove them.
   for (const name of names.filter((n) => n.endsWith('.tmp'))) {
     await fsp.unlink(path.join(P.mediaDir, name)).catch(() => {});
   }
   for (const name of names.filter(isSafeMediaId)) {
+    const file = mediaPath(name);
+    const sidecar = `${file}.rekey`;
     try {
-      const file = mediaPath(name);
       const blob = await fsp.readFile(file);
       const already = isEncryptedBlob(blob);
-      if (encrypt && !already) {
-        await writeFileAtomicRaw(file, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(dk, blob)]));
-      } else if (!encrypt && already) {
-        await writeFileAtomicRaw(file, vaultCrypto.decryptBuffer(dk, blob.subarray(MEDIA_MAGIC.length)));
-      }
+      if (encrypt === already) continue; // already in the state we want
+      const out = encrypt
+        ? Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(dk, blob)])
+        : vaultCrypto.decryptBuffer(dk, blob.subarray(MEDIA_MAGIC.length));
+      await writeFileAtomicRaw(sidecar, out);
+      prepared.push({ file, sidecar });
     } catch {
       failed.push(name);
     }
   }
-  return failed;
+  return { prepared, failed };
 }
 
 function emptyData() {
@@ -508,7 +515,7 @@ function normaliseQuestions(list) {
 
 // The prompts to actually show: the user's saved set, or the built-in default.
 async function loadQuestions() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   const saved = normaliseQuestions(s.questions);
   return saved || DEFAULT_QUESTIONS.map((q) => ({ ...q }));
 }
@@ -517,16 +524,42 @@ async function loadQuestions() {
 // The built-in defaults are always included, so their answers never fall back
 // to a generic label even if the user has never explicitly saved a prompt set.
 async function knownTitles() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   const base = {};
   for (const q of DEFAULT_QUESTIONS) base[q.key] = q.title;
   const saved = s.knownTitles && typeof s.knownTitles === 'object' ? s.knownTitles : {};
   return { ...base, ...saved };
 }
 
+// Keep a title only while something still needs it: a prompt currently in use,
+// a built-in default, or an answer somewhere in the journal that would otherwise
+// export with no label. Everything else is a private phrase the user deleted and
+// has no reason to leave lying in a plaintext file. If the journal cannot be
+// read right now (locked, or a bad moment on disk) nothing is pruned, because
+// dropping a title whose answers we simply could not see would lose a label.
+async function pruneKnownTitles(titles, currentQuestions) {
+  const keep = new Set(DEFAULT_QUESTIONS.map((q) => q.key));
+  for (const q of currentQuestions || []) keep.add(q.key);
+  let data = null;
+  try {
+    const res = await loadData();
+    if (res && res.data && isValidData(res.data)) data = res.data;
+  } catch { data = null; }
+  if (!data) return titles; // cannot prove a title is unused, so keep it
+  for (const entry of Object.values(data.entries || {})) {
+    for (const k of Object.keys(entry || {})) {
+      if (String(entry[k] || '').trim()) keep.add(k);
+    }
+  }
+  const out = {};
+  for (const k of Object.keys(titles)) if (keep.has(k)) out[k] = titles[k];
+  return out;
+}
+
 // Saves a new prompt set. Records the titles of both the outgoing prompts and
-// the new ones in `knownTitles` (never removing old ones), so answers to a
-// prompt the user deletes can still be labelled in the list and the export.
+// the new ones in `knownTitles`, so answers to a prompt the user deletes can
+// still be labelled in the list and the export, and prunes the ones nothing
+// refers to any more (see pruneKnownTitles).
 async function saveQuestions(list) {
   const cleaned = normaliseQuestions(list);
   if (!cleaned) {
@@ -538,7 +571,12 @@ async function saveQuestions(list) {
   for (const q of outgoing) if (!titles[q.key]) titles[q.key] = q.title;
   for (const q of cleaned) titles[q.key] = q.title;
   s.questions = cleaned;
-  s.knownTitles = titles;
+  // settings.json is always plain JSON, even when the journal is encrypted, and
+  // these titles are the user's own words. Keeping every title ever typed meant
+  // deleting a prompt called something private left it readable beside the
+  // encrypted journal forever. A title is only needed while an answer still
+  // uses its key, so drop the ones nothing refers to any more.
+  s.knownTitles = await pruneKnownTitles(titles, cleaned);
   await saveSettings(s);
   return cleaned;
 }
@@ -559,7 +597,7 @@ function normaliseTemplates(list) {
 }
 
 async function loadTemplates() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return normaliseTemplates(s.templates) || DEFAULT_TEMPLATES.map((t) => ({ ...t }));
 }
 
@@ -594,7 +632,7 @@ function normaliseActivities(list) {
 }
 
 async function loadActivities() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return normaliseActivities(s.activities) || DEFAULT_ACTIVITIES.slice();
 }
 
@@ -617,7 +655,7 @@ function normaliseTheme(t) {
 }
 
 async function getTheme() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return normaliseTheme(s.theme);
 }
 
@@ -654,7 +692,7 @@ function normaliseThemePresets(list) {
   return out;
 }
 async function getCustomTheme() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return { custom: normaliseCustom(s.customTheme), presets: normaliseThemePresets(s.themePresets) };
 }
 async function setCustomTheme(custom) {
@@ -673,7 +711,7 @@ async function setThemePresets(list) {
 // Whether Flint keeps running in the tray (and starts with Windows) so daily
 // reminders can reach the user when the window is closed. Off by default.
 async function getRunInBackground() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.runInBackground === true;
 }
 async function setRunInBackground(on) {
@@ -694,7 +732,10 @@ async function setRunInBackground(on) {
 // upgrading with runInBackground on would quietly lose their startup entry and
 // their reminders would stop arriving after the next reboot, with no error.
 async function getStartWithWindows() {
-  const s = await loadSettings();
+  // This getter also writes, so it must not run on a fallback: materialising
+  // from an empty object after a failed read would flatten the settings file.
+  let s;
+  try { s = await loadSettings(); } catch { return false; }
   if (s.startWithWindows === undefined) {
     // Upgrade path, and it runs exactly once. Write the inherited answer down so
     // the fallback can never be consulted again: leaving it implicit is what let
@@ -717,7 +758,7 @@ async function setStartWithWindows(on) {
 // still here" notification. Both are asked once in the app's life; a dismissed
 // question counts as an answer, so these are set on every exit path.
 async function getTrayAsked() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.trayAsked === true;
 }
 async function setTrayAsked(on) {
@@ -727,7 +768,7 @@ async function setTrayAsked(on) {
   return s.trayAsked;
 }
 async function getTrayNoticeShown() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.trayNoticeShown === true;
 }
 async function setTrayNoticeShown(on) {
@@ -740,7 +781,7 @@ async function setTrayNoticeShown(on) {
 // On by default. Read synchronously at startup (see readStartupFlagsSync),
 // because Electron only honours disableHardwareAcceleration before app ready.
 async function getHardwareAcceleration() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.hardwareAcceleration !== false;
 }
 async function setHardwareAcceleration(on) {
@@ -755,7 +796,7 @@ async function setHardwareAcceleration(on) {
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 async function getReminder() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   const r = s.reminder && typeof s.reminder === 'object' ? s.reminder : {};
   return { enabled: r.enabled === true, time: TIME_PATTERN.test(r.time) ? r.time : '20:00' };
 }
@@ -771,7 +812,7 @@ async function setReminder(next) {
 // Weekdays (0 = Sunday) the user does not plan to write on. A day off never
 // breaks a streak; it is skipped rather than counted.
 async function getDaysOff() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return Array.isArray(s.streakDaysOff)
     ? s.streakDaysOff.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
     : [];
@@ -792,7 +833,7 @@ async function setDaysOff(list) {
 const AUTOLOCK_CHOICES = [0, 1, 5, 15, 30, 60];
 
 async function getAutoLockMinutes() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return AUTOLOCK_CHOICES.includes(s.autoLockMinutes) ? s.autoLockMinutes : 15;
 }
 
@@ -808,7 +849,7 @@ async function setAutoLockMinutes(n) {
 const AUTOSAVE_CHOICES = [5, 15, 30, 60, 120, 300, 600, 1800, 3600];
 
 async function getAutosaveSeconds() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return AUTOSAVE_CHOICES.includes(s.autosaveSeconds) ? s.autosaveSeconds : 30;
 }
 
@@ -821,7 +862,7 @@ async function setAutosaveSeconds(n) {
 
 // Whether the one-time first-run onboarding has been completed.
 async function getOnboarded() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.onboarded === true;
 }
 
@@ -845,13 +886,13 @@ async function setOnboarded(done) {
 // The first-run date, stamped once at onboarding, so the renderer can show a
 // gentle "just settling in" note during the opening week and nothing after.
 async function getStartedOn() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return { startedOn: /^\d{4}-\d{2}-\d{2}$/.test(s.startedOn) ? s.startedOn : '' };
 }
 
 // Whether the optional guided prompts are shown under each day. Off by default.
 async function getGuided() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.guided === true;
 }
 
@@ -868,7 +909,7 @@ async function setGuided(on) {
 // This is the ONLY thing the app ever does online; turning it off returns the
 // app to fully-offline behaviour. Flint content is never involved either way.
 async function getUpdateChecks() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return s.updateChecks !== false;
 }
 
@@ -908,7 +949,7 @@ function isSafeBackupFolder(folder) {
 }
 
 async function getBackupSettings() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   const b = s.autoBackup && typeof s.autoBackup === 'object' ? s.autoBackup : {};
   const folder = isSafeBackupFolder(b.folder) ? b.folder : '';
   return {
@@ -952,20 +993,24 @@ async function setBackupFolder(folder) {
 // word and lose every picture. Attachment ids never change, so only what is not
 // already there gets copied. They are copied exactly as stored, which means an
 // encrypted journal's photos stay encrypted in the backup too.
+// Reports failures as well as copies. Swallowing them meant Flint could say
+// "Copied to E:\..." and refresh the "Last copy" date the user reads as proof,
+// while an arbitrary subset of their photos was silently missing from the
+// offsite copy: a full drive, a locked file, a permission change.
 async function backupMedia(destRoot) {
   let names;
-  try { names = await fsp.readdir(P.mediaDir); } catch { return 0; }
+  try { names = await fsp.readdir(P.mediaDir); } catch { return { copied: 0, failed: 0 }; }
   const ids = names.filter(isSafeMediaId);
-  if (!ids.length) return 0;
+  if (!ids.length) return { copied: 0, failed: 0 };
   const dest = path.join(destRoot, 'media');
   await fsp.mkdir(dest, { recursive: true });
-  let copied = 0;
+  let copied = 0, failed = 0;
   for (const id of ids) {
     const to = path.join(dest, id);
     try { await fsp.access(to); continue; } catch { /* not copied yet */ }
-    try { await fsp.copyFile(mediaPath(id), to); copied++; } catch { /* skip this one */ }
+    try { await fsp.copyFile(mediaPath(id), to); copied++; } catch { failed++; }
   }
-  return copied;
+  return { copied, failed };
 }
 
 function runScheduledBackup() {
@@ -980,15 +1025,19 @@ function runScheduledBackup() {
     await fsp.mkdir(dir, { recursive: true });
     const dest = path.join(dir, `flint-backup-${stamp()}.json`);
     await fsp.copyFile(P.dataFile, dest);
-    const photos = await backupMedia(dir);
+    const media = await backupMedia(dir);
 
     const names = (await fsp.readdir(dir)).filter((n) => BACKUP_PATTERN.test(n)).sort().reverse();
     for (const old of names.slice(cfg.keep)) await fsp.unlink(path.join(dir, old)).catch(() => {});
 
-    const s = await loadSettings();
-    s.autoBackup = { ...(s.autoBackup || {}), lastRun: new Date().toISOString() };
-    await saveSettings(s);
-    return { ok: true, path: dest, photos };
+    // The copy has already happened, so a settings problem must not be reported
+    // as a failed backup. Recording when it last ran is bookkeeping, not the job.
+    try {
+      const s = await loadSettings();
+      s.autoBackup = { ...(s.autoBackup || {}), lastRun: new Date().toISOString() };
+      await saveSettings(s);
+    } catch { /* the backup itself succeeded; the timestamp is not worth failing over */ }
+    return { ok: true, path: dest, photos: media.copied, photosFailed: media.failed };
   });
 }
 
@@ -1458,34 +1507,66 @@ let settingsCache = null;
 let settingsStamp = '';
 function invalidateSettingsCache() { settingsCache = null; settingsStamp = ''; }
 
+// "The file is not there" and "the file could not be read" are completely
+// different answers, and collapsing them was a real hazard: a transient read
+// failure (antivirus or a sync client holding the file) cached an empty object
+// against the LIVE file's stamp, so every later read that session returned {}.
+// The next settings write then flattened the file, taking custom prompts, the
+// window PIN hash, days off, the reminder and the backup folder with it, with no
+// error and no backup anywhere. Only ENOENT may be treated as empty; anything
+// else leaves the cache alone and is reported, so a caller can refuse to write.
+class SettingsUnreadable extends Error {}
+
 async function loadSettings() {
   let stamp = '';
   try {
     const st = await fsp.stat(P.settingsFile);
     stamp = `${st.mtimeMs}:${st.size}`;
-  } catch {
-    stamp = ''; // no file: fall through and cache the empty result
-  }
-  if (settingsCache && stamp && stamp === settingsStamp) return settingsCache;
-  try {
-    const raw = await fsp.readFile(P.settingsFile, 'utf8');
-    const parsed = JSON.parse(raw);
-    settingsCache = parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw new SettingsUnreadable(err.code || err.message);
+    // genuinely absent: a fresh install, so an empty object is the truth
     settingsCache = {};
+    settingsStamp = '';
+    return settingsCache;
   }
+  if (settingsCache && stamp === settingsStamp) return settingsCache;
+  let parsed;
+  try {
+    parsed = JSON.parse(await fsp.readFile(P.settingsFile, 'utf8'));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') { settingsCache = {}; settingsStamp = ''; return settingsCache; }
+    // Unreadable or unparseable while the file exists. Do NOT cache anything:
+    // the next read should try again rather than serve a fiction.
+    invalidateSettingsCache();
+    throw new SettingsUnreadable(err && (err.code || err.message));
+  }
+  settingsCache = parsed && typeof parsed === 'object' ? parsed : {};
   settingsStamp = stamp;
   return settingsCache;
 }
 
 async function saveSettings(settings) {
+  if (!settings || typeof settings !== 'object') throw new Error('Refusing to write settings that are not an object.');
   await writeFileAtomic(P.settingsFile, JSON.stringify(settings, null, 2));
-  settingsCache = settings && typeof settings === 'object' ? settings : {};
+  settingsCache = settings;
   try {
     const st = await fsp.stat(P.settingsFile);
     settingsStamp = `${st.mtimeMs}:${st.size}`;
   } catch {
     settingsStamp = ''; // unknown: the next read revalidates rather than trusting
+  }
+}
+
+// Every getter wants the same thing: the settings if they are readable, and a
+// safe default if they are genuinely absent, but never a fiction after a read
+// failure. Setters deliberately do NOT use this: they must throw so the caller
+// reports the failure instead of writing over settings it could not read.
+async function loadSettingsOrDefault(fallback = {}) {
+  try {
+    return await loadSettings();
+  } catch (err) {
+    if (err instanceof SettingsUnreadable) return fallback;
+    throw err;
   }
 }
 
@@ -1507,7 +1588,7 @@ function hashPin(pin, salt) {
 }
 
 async function pinIsSet() {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   return Boolean(s.pin && s.pin.salt && s.pin.hash);
 }
 
@@ -1519,7 +1600,7 @@ async function setPin(pin) {
 }
 
 async function verifyPin(pin) {
-  const s = await loadSettings();
+  const s = await loadSettingsOrDefault();
   if (!s.pin || !s.pin.salt || !s.pin.hash) return false;
   const expected = Buffer.from(s.pin.hash, 'hex');
   const actual = Buffer.from(hashPin(pin, s.pin.salt), 'hex');
@@ -1797,8 +1878,12 @@ function enableEncryption(pin) {
     // journal stayed encrypted, so nothing here is allowed to be fatal.
     const leftovers = [];
     try {
-      const failed = await rewriteMediaEncryption(dk, true);
-      if (failed.length) leftovers.push(`${failed.length} ${failed.length === 1 ? 'photo is' : 'photos are'} still unencrypted`);
+      // The vault is already committed above, so the new-key copies are safe to
+      // move in immediately. Anything that would not convert is reported.
+      const { prepared, failed } = await rewriteMediaPrepare(dk, true);
+      const stuck = await mediaSidecarCommit(prepared);
+      const left = failed.length + stuck.length;
+      if (left) leftovers.push(`${left} ${left === 1 ? 'photo is' : 'photos are'} still unencrypted`);
     } catch { leftovers.push('photos could not all be encrypted'); }
     try {
       const left = await purgePlaintextBackups();
@@ -1840,11 +1925,25 @@ function disableEncryption(pin) {
     // Photos FIRST, and only continue if every one of them came back. Clearing
     // the key while an attachment is still encrypted would strand it forever:
     // the vault (and its wraps) would be gone, so nothing could re-derive it.
-    const failed = await rewriteMediaEncryption(dk, false);
+    // Photos first and in two phases, because the key disappears at the end of
+    // this function: a photo still encrypted after that is lost. Phase one
+    // touches no original, so giving up here really does change nothing.
+    const { prepared, failed } = await rewriteMediaPrepare(dk, false);
     if (failed.length) {
+      await mediaSidecarAbort(prepared);
       return {
         ok: false,
         error: `Encryption was left ON because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be unlocked just now (they may be open in another program). Nothing was changed. Please try again.`
+      };
+    }
+    const stuck = await mediaSidecarCommit(prepared);
+    if (stuck.length) {
+      // Some photos are readable now and some are not. The vault is still on
+      // disk and we still hold the key, so keeping encryption ON is the state
+      // everything can still be recovered from. Say exactly that.
+      return {
+        ok: false,
+        error: `Encryption was left ON because ${stuck.length} ${stuck.length === 1 ? 'photo' : 'photos'} could not be replaced just now (they may be open in another program). Some photos are already readable, and your journal is unchanged. Close anything using your photos and try again.`
       };
     }
     await writeMainAndBackup(JSON.stringify(data, null, 2));
@@ -1895,14 +1994,14 @@ async function rekeyMediaPrepare(oldDk, newDk) {
 
 // Give up cleanly: the originals were never touched, so removing the sidecars
 // returns the folder to exactly the state we found it in.
-async function rekeyMediaAbort(prepared) {
+async function mediaSidecarAbort(prepared) {
   for (const p of prepared) await fsp.unlink(p.sidecar).catch(() => {});
 }
 
 // Move the new-key copies into place. A rename that fails here leaves its
 // sidecar behind on purpose: the sidecar holds the only readable copy under the
 // new key, so deleting it would be the very loss this rewrite exists to prevent.
-async function rekeyMediaCommit(prepared) {
+async function mediaSidecarCommit(prepared) {
   const stuck = [];
   for (const p of prepared) {
     let done = false;
@@ -1949,7 +2048,7 @@ async function rotateToNewKey(data, oldDk, newPin) {
   const { prepared, failed } = await rekeyMediaPrepare(oldDk, dk);
   if (failed.length) {
     // Every original is still on the old key, so this really is a clean no-op.
-    await rekeyMediaAbort(prepared);
+    await mediaSidecarAbort(prepared);
     return {
       ok: false,
       error: `Nothing was changed, because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be re-locked just now (they may be open in another program). Your PIN is unchanged and every photo is exactly as it was. Please try again.`
@@ -1959,7 +2058,7 @@ async function rotateToNewKey(data, oldDk, newPin) {
   // new-key photos are readable. Doing it the other way round is what stranded
   // them.
   await writeMainAndBackup(JSON.stringify(vault, null, 2));
-  const stuck = await rekeyMediaCommit(prepared);
+  const stuck = await mediaSidecarCommit(prepared);
   const removed = await rekeyBackups(oldDk, dk, vault);
   setSessionDk(dk);
   sessionVault = vault;

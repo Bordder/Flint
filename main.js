@@ -659,7 +659,30 @@ async function renderPdf(html) {
   pdfWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   pdfWin.webContents.on('will-navigate', (e) => e.preventDefault());
   try {
-    await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    // The document used to be passed as a data: URL, which Chromium caps at
+    // about 2 MB. Past that every PDF export failed with ERR_INVALID_URL, and it
+    // got worse the longer someone kept a journal, which is exactly backwards.
+    // Injecting the markup into a blank page has no size limit. A temp .html
+    // file would also work and is deliberately not used: it would leave the
+    // whole journal readable on disk beside an encrypted one.
+    // The whole document used to travel as a data: URL, which Chromium caps at
+    // about 2 MB, so every export failed once a journal grew past it, and got
+    // worse the longer someone wrote. Only the HEAD travels that way now (the
+    // CSP, the print styles and the title, a few KB and a fixed size), and the
+    // body is injected afterwards, which has no length limit.
+    //
+    // The head must be parsed normally rather than injected: a CSP set through
+    // a meta element only takes effect while the document is being parsed, so
+    // writing it in later would silently drop the protection. A temp .html file
+    // would also work and is deliberately not used: it would leave the entire
+    // journal readable on disk beside an encrypted one.
+    const head = (html.match(/<head[^>]*>([\s\S]*?)<\/head>/i) || [, ''])[1];
+    const body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || [, ''])[1];
+    const shell = `<!doctype html><html lang="en-GB"><head>${head}</head><body></body></html>`;
+    await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(shell));
+    await pdfWin.webContents.executeJavaScript(
+      `document.body.innerHTML = ${JSON.stringify(body)}; true;`
+    );
     return await pdfWin.webContents.printToPDF({
       printBackground: true, pageSize: 'A4', margins: { top: 0.6, bottom: 0.6, left: 0.6, right: 0.6 } // inches
     });
