@@ -118,8 +118,10 @@ async function main() {
   });
 
   await test('saveData refuses non-journal shapes', async () => {
-    await assert.rejects(() => store.saveData(null));
-    await assert.rejects(() => store.saveData({ entries: [] }));
+    // Matched on message: a bare assert.rejects also passes when the rejection is
+    // an incidental TypeError from a bug in the validator itself.
+    await assert.rejects(() => store.saveData(null), /does not look like journal data/i);
+    await assert.rejects(() => store.saveData({ entries: [] }), /does not look like journal data/i);
   });
 
   await test('concurrent saves are serialised, last one wins, file stays valid', async () => {
@@ -353,8 +355,8 @@ async function main() {
   });
 
   await test('saveQuestions refuses an all-blank list', async () => {
-    await assert.rejects(() => store.saveQuestions([{ title: '  ' }]));
-    await assert.rejects(() => store.saveQuestions([]));
+    await assert.rejects(() => store.saveQuestions([{ title: '  ' }]), /at least one/i);
+    await assert.rejects(() => store.saveQuestions([]), /at least one/i);
   });
 
   await test('removing a default prompt still labels its old answers by title', async () => {
@@ -710,7 +712,10 @@ async function main() {
     for (const n of names) {
       const v = JSON.parse(fs.readFileSync(path.join(PC.backupsDir, n), 'utf8'));
       assert.strictEqual(v.flintEncrypted, 1, `${n} is a vault`);
-      await assert.rejects(() => vaultCrypto.openWithPin(v, '1234'), `${n} must not open with the old PIN`);
+      // The 2nd arg to assert.rejects is a matcher; a plain string there is taken as
+      // the failure MESSAGE and asserts nothing, which is what this line used to do.
+      await assert.rejects(() => vaultCrypto.openWithPin(v, '1234'), Error,
+        `${n} must not open with the old PIN`);
     }
   });
 
@@ -768,10 +773,24 @@ async function main() {
   });
 
   await test('an attachment id is never treated as a path', async () => {
-    assert.strictEqual((await store.getMedia('../../entries.json')).ok, false, 'traversal refused');
-    assert.strictEqual((await store.getMedia('..\\settings.json')).ok, false, 'traversal refused');
-    assert.strictEqual((await store.removeMedia('../../entries.json')).ok, false, 'traversal refused');
-    assert.ok(fs.existsSync(PC.dataFile), 'entries.json is untouched');
+    // Attachments live in data/media, so the journal is exactly ONE level up.
+    // These used to say '../../entries.json', which resolves to the folder ABOVE
+    // the data folder, where no journal exists: the removeMedia case could not
+    // have deleted anything even with the guard removed, so the strongest line
+    // here was unfalsifiable. One '..' is the payload that actually reaches it.
+    const before = fs.readFileSync(PC.dataFile);
+    const settingsBefore = fs.existsSync(PC.settingsFile) ? fs.readFileSync(PC.settingsFile) : null;
+    const ids = ['../entries.json', '..' + path.sep + 'entries.json', '../settings.json',
+                 '../../entries.json', 'sub/../../entries.json'];
+
+    for (const id of ids) {
+      assert.strictEqual((await store.getMedia(id)).ok, false, `read refused: ${id}`);
+      assert.strictEqual((await store.removeMedia(id)).ok, false, `delete refused: ${id}`);
+    }
+
+    assert.ok(fs.existsSync(PC.dataFile), 'the journal still exists');
+    assert.deepStrictEqual(fs.readFileSync(PC.dataFile), before, 'and is byte-identical');
+    if (settingsBefore) assert.deepStrictEqual(fs.readFileSync(PC.settingsFile), settingsBefore, 'settings untouched');
   });
 
   await test('disableEncryption needs the PIN and restores plaintext', async () => {
@@ -828,7 +847,8 @@ async function main() {
       // And a save must never quietly become a plaintext write.
       const d = store.emptyData();
       d.entries['2026-12-01'] = { note: 'must never be written in the clear' };
-      await assert.rejects(() => store.saveData(d), 'the save fails rather than writing plaintext');
+      await assert.rejects(() => store.saveData(d), Error,
+        'the save fails rather than writing plaintext');
     } finally {
       try { fs.rmSync(PU.dataFile, { recursive: true, force: true }); } catch { /* best effort */ }
       store.init(root);
@@ -1209,7 +1229,11 @@ async function main() {
       const before = ids.slice(0, 2).map((id) => fs.readFileSync(path.join(PR.mediaDir, id)));
       const res = await store.changeEncryptionPin('firstpin1', 'secondpin2');
       assert.strictEqual(res.ok, false, 'the PIN change is refused');
-      assert.match(res.error, /nothing was changed|exactly as it was/i, 'and says so truthfully');
+      // The file was deliberately corrupted, so this is the PERMANENT kind of
+      // failure. Saying "please try again" would be advice that can never work,
+      // so it names the file and offers to go on without it instead.
+      assert.deepStrictEqual(res.damagedPhotos, [ids[2]], 'the damaged file is named');
+      assert.doesNotMatch(res.error, /try again/i, 'and does not tell the user to retry forever');
 
       // the promise the message makes must actually hold
       ids.slice(0, 2).forEach((id, i) => {
@@ -1219,15 +1243,200 @@ async function main() {
       const sidecars = fs.readdirSync(PR.mediaDir).filter((n) => n.endsWith('.rekey'));
       assert.strictEqual(sidecars.length, 0, 'no half-finished copies are left behind');
 
-      // and the original PIN still opens everything
+      // M-2: going on without the damaged file must actually work, and must
+      // leave that file untouched rather than deleting it.
+      const damagedBefore = fs.readFileSync(victim);
+      const retry = await store.changeEncryptionPin('firstpin1', 'secondpin2', { skipDamaged: true });
+      assert.strictEqual(retry.ok, true, `the PIN change goes through without it (${retry.error || ''})`);
+      assert.deepStrictEqual(retry.damagedPhotos, [ids[2]], 'and reports what it skipped');
+      assert.ok(fs.readFileSync(victim).equals(damagedBefore), 'the damaged file is left exactly as it was');
+      // the two good photos moved to the new key
       store.lock();
-      assert.strictEqual((await store.unlock('firstpin1')).ok, true, 'the old PIN still works');
+      assert.strictEqual((await store.unlock('secondpin2')).ok, true, 'the NEW PIN works');
       for (const id of ids.slice(0, 2)) {
         const got = await store.getMedia(id);
-        assert.ok(got.ok, `the photo still decrypts (${got.error || ''})`);
-        assert.match(got.dataUrl, /^data:image\/png;base64,\w/, 'and comes back as real image bytes');
+        assert.ok(got.ok, `photo still opens under the new PIN (${got.error || ''})`);
+      }
+      store.lock();
+      assert.strictEqual((await store.unlock('firstpin1')).ok, false, 'the old PIN no longer works');
+      assert.strictEqual((await store.unlock('secondpin2')).ok, true, 'back in with the new one');
+
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('L7: addMedia checks the file itself, not just its name', async () => {
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l7-'));
+    store.init(rootA);
+    try {
+      await store.saveData(store.emptyData());
+
+      // A missing file used to throw straight out of the IPC handler.
+      const gone = await store.addMedia(path.join(rootA, 'never-existed.png'));
+      assert.strictEqual(gone.ok, false, 'a missing file is refused, not thrown');
+      assert.match(gone.error, /could not be opened/i, 'and says so plainly');
+
+      // A folder named like an image.
+      const dir = path.join(rootA, 'a-folder.png');
+      fs.mkdirSync(dir);
+      assert.strictEqual((await store.addMedia(dir)).ok, false, 'a directory is not a photo');
+
+      // The real point: the extension is a claim. Flint renders attachments back
+      // into the writing window, so a file gets in on its bytes or not at all.
+      const liar = path.join(rootA, 'not-really.png');
+      fs.writeFileSync(liar, Buffer.from('<?php echo "not an image"; ?>'));
+      const res = await store.addMedia(liar);
+      assert.strictEqual(res.ok, false, 'a renamed non-image is refused');
+      assert.match(res.error, /not PNG/i, 'and the message says why');
+
+      // A genuine file of each accepted kind still goes in.
+      const real = {
+        '.png': Buffer.from('89504e470d0a1a0a', 'hex'),
+        '.jpg': Buffer.from('ffd8ff', 'hex'),
+        '.gif': Buffer.from('474946383961', 'hex'),
+        '.webp': Buffer.concat([Buffer.from('RIFF'), Buffer.from('0000', 'hex'), Buffer.from('00', 'hex'), Buffer.from('00', 'hex'), Buffer.from('WEBP')])
+      };
+      for (const [ext, magic] of Object.entries(real)) {
+        const good = path.join(rootA, `real${ext}`);
+        fs.writeFileSync(good, Buffer.concat([magic, Buffer.alloc(64, 7)]));
+        const add = await store.addMedia(good);
+        assert.strictEqual(add.ok, true, `a real ${ext} is accepted (${add.error || ''})`);
+      }
+
+      // Oversize is refused without reading the file into memory first.
+      const big = path.join(rootA, 'huge.png');
+      fs.writeFileSync(big, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(21 * 1024 * 1024)]));
+      assert.match((await store.addMedia(big)).error, /bigger than 20 MB/i, 'oversize refused');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('M5: the PIN meter prices a known-weak PIN by the wordlist, not the character set', async () => {
+    // common-pins.js existed with no test at all, which is a poor state for the
+    // one file whose entire job is to stop the meter lying. The estimator lives
+    // in the renderer and cannot be required, so the shipped source is lifted out
+    // and run directly: a reimplementation here would test itself, not the app.
+    const { COMMON_PINS, COMMON_SUFFIXES, COMMON_PREFIXES } = require('../shared/common-pins');
+    assert.ok(COMMON_PINS.length > 50, 'the wordlist is populated');
+    assert.ok(COMMON_PINS.includes('password'), 'and contains the obvious ones');
+    assert.deepStrictEqual(COMMON_PINS.map((w) => w.toLowerCase()), COMMON_PINS,
+      'entries are lowercase, which is what the matcher assumes');
+
+    // Normalised first: the working tree is CRLF, so a '\n}\n' scan finds nothing
+    // and silently lifts an empty string, which then fails as a confusing
+    // "not defined" rather than as "the function moved".
+    const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8').split('\r\n').join('\n');
+    const lift = (name) => {
+      const at = src.indexOf(`function ${name}(`);
+      assert.ok(at > -1, `${name} still exists in app.js`);
+      const end = src.indexOf('\n}\n', at);
+      assert.ok(end > at, `${name} has a findable end in app.js`);
+      const out = src.slice(at, end + 3);
+      assert.ok(out.includes('return'), `${name} was lifted with a body`);
+      return out;
+    };
+    const sandbox = { COMMON_PINS, COMMON_SUFFIXES, COMMON_PREFIXES };
+    const body = `const GUESSES_PER_SEC = 500;\n${lift('wordlistGuesses')}\n${lift('crackSeconds')}\n`
+      + 'return { wordlistGuesses, crackSeconds };';
+    const { wordlistGuesses, crackSeconds } = new Function(
+      'COMMON_PINS', 'COMMON_SUFFIXES', 'COMMON_PREFIXES', body
+    )(sandbox.COMMON_PINS, sandbox.COMMON_SUFFIXES, sandbox.COMMON_PREFIXES);
+
+    // The measured case that prompted the whole file: "password1" was found in
+    // 2.29 seconds against a real vault while the meter said thousands of years.
+    const YEAR = 60 * 60 * 24 * 365;
+    for (const weak of ['password1', 'Password1', 'letmein123', 'qwerty', 'iloveyou!', '1111', '123456789']) {
+      assert.notStrictEqual(wordlistGuesses(weak), null, `${weak} is recognised as known-weak`);
+      assert.ok(crackSeconds(weak) < 60 * 60, `${weak} is not called safe (got ${crackSeconds(weak)}s)`);
+    }
+
+    // And the promise made in the comment: the wordlist can only ever lower an
+    // estimate, so a PIN that owes nothing to it is untouched.
+    for (const strong of ['xk4vT!m9qLz2', 'correct-horse-battery-staple-7']) {
+      assert.strictEqual(wordlistGuesses(strong), null, `${strong} is not on any list`);
+      assert.ok(crackSeconds(strong) > 100 * YEAR, `${strong} is still rated strong`);
+    }
+  });
+
+  await test('M4: a day holding only a photo still exports, in every format', async () => {
+    // The comment above entryMediaCount promises this, and the code delivered it,
+    // but nothing held it there: dropping the media clause from entryHasContent
+    // would silently erase those days from every export, and the person would
+    // only find out from an export they made because something had gone wrong.
+    const d = store.emptyData();
+    d.entries['2026-04-04'] = { __media: [{ id: 'a.bin' }, { id: 'b.bin' }], updatedAt: 'x' };
+    d.entries['2026-04-05'] = { note: 'a day with words', updatedAt: 'x' };
+    d.entries['2026-04-06'] = { __media: [{ id: null }, 'junk'], updatedAt: 'x' };
+    const opts = { questions: store.DEFAULT_QUESTIONS, knownTitles: {} };
+
+    for (const build of ['buildExportText', 'buildExportMarkdown', 'buildExportHtml']) {
+      const out = store[build](d, opts);
+      assert.ok(/4 April 2026|2026-04-04/.test(out), `${build}: the photo-only day is in the export`);
+      assert.match(out, /2 photos/, `${build}: and says how many`);
+      assert.ok(/5 April 2026|2026-04-05/.test(out), `${build}: the written day is still there too`);
+      // A day whose only attachments are malformed entries has nothing in it.
+      assert.ok(!/6 April 2026|2026-04-06/.test(out), `${build}: a day with no real photo is not padded in`);
+    }
+  });
+
+  await test('M3: turning encryption OFF with a damaged photo refuses, then can go on without it', async () => {
+    // The mirror of H5, and the more dangerous direction: here the key is thrown
+    // away at the end, so a photo still encrypted after this is gone for good,
+    // and a sidecar left behind is a DECRYPTED photo sitting next to a journal
+    // that no longer has anything to clean it up. Neither had a test.
+    const rootD = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-m3-'));
+    const PD = store.init(rootD);
+    try {
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('offpin1234')).ok, 'encrypted');
+
+      const ids = [];
+      for (let i = 0; i < 3; i++) {
+        const src = path.join(rootD, `pic${i}.png`);
+        fs.writeFileSync(src, Buffer.from('89504e470d0a1a0a' + String(i).repeat(2) + 'ab'.repeat(64), 'hex'));
+        const add = await store.addMedia(src);
+        assert.ok(add.ok, `photo stored (${add.error || ''})`);
+        ids.push(add.id);
+      }
+
+      const victim = path.join(PD.mediaDir, ids[1]);
+      fs.writeFileSync(victim, Buffer.concat([Buffer.from('FLINTMED1'), Buffer.from('damaged beyond any key')]));
+      const damagedBefore = fs.readFileSync(victim);
+      const goodBefore = [ids[0], ids[2]].map((id) => fs.readFileSync(path.join(PD.mediaDir, id)));
+
+      const res = await store.disableEncryption('offpin1234');
+      assert.strictEqual(res.ok, false, 'refused rather than stranding a photo');
+      assert.deepStrictEqual(res.damagedPhotos, [ids[1]], 'the damaged file is named');
+      assert.doesNotMatch(res.error, /try again/i, 'no advice that can never work');
+      assert.strictEqual(JSON.parse(fs.readFileSync(PD.dataFile, 'utf8')).flintEncrypted, 1, 'still a vault');
+
+      // Nothing half-done: no sidecars, and the good photos are untouched and
+      // still encrypted, because the journal is still encrypted.
+      assert.strictEqual(fs.readdirSync(PD.mediaDir).filter((n) => n.endsWith('.rekey')).length, 0, 'no sidecars left');
+      [ids[0], ids[2]].forEach((id, i) => {
+        assert.ok(fs.readFileSync(path.join(PD.mediaDir, id)).equals(goodBefore[i]), `photo ${i} untouched`);
+      });
+
+      // Going on without it: the good photos come out readable, the damaged one
+      // is left exactly as it was rather than quietly deleted.
+      const retry = await store.disableEncryption('offpin1234', { skipDamaged: true });
+      assert.strictEqual(retry.ok, true, `encryption turns off without it (${retry.error || ''})`);
+      assert.deepStrictEqual(retry.damagedPhotos, [ids[1]], 'and reports what it skipped');
+      assert.ok(fs.readFileSync(victim).equals(damagedBefore), 'the damaged file is left exactly as it was');
+      assert.strictEqual(fs.readdirSync(PD.mediaDir).filter((n) => n.endsWith('.rekey')).length, 0, 'and no sidecars survive');
+
+      const plain = JSON.parse(fs.readFileSync(PD.dataFile, 'utf8'));
+      assert.ok(!plain.flintEncrypted, 'the journal is plaintext now');
+      for (const id of [ids[0], ids[2]]) {
+        const raw = fs.readFileSync(path.join(PD.mediaDir, id));
+        assert.ok(!raw.subarray(0, 9).equals(Buffer.from('FLINTMED1')), 'the good photos really were decrypted');
+        const got = await store.getMedia(id);
+        assert.ok(got.ok, `and still open (${got.error || ''})`);
       }
     } finally {
+      store.lock();
       store.init(root);
     }
   });
@@ -1284,7 +1493,10 @@ async function main() {
       fs.writeFileSync(PM.dataFile, vaultBytes);
 
       const src = path.join(os.tmpdir(), `flint-media-guard-${Date.now()}.png`);
-      fs.writeFileSync(src, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+      // A COMPLETE PNG signature. This was a truncated one, which addMedia now
+      // rejects on format before it ever reaches the drift guard being tested,
+      // so the test would have passed for the wrong reason.
+      fs.writeFileSync(src, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
       try {
         const res = await store.addMedia(src);
         assert.strictEqual(res.ok, false, 'the photo was refused');

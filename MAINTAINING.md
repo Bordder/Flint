@@ -41,8 +41,20 @@ Before you publish, make sure the build is sound:
 - `npm ci && npm test` pass (a clean install of the exact locked versions, then the
   data-layer self-checks). Use `npm ci`, not `npm install`, so you ship what you tested.
   These also run automatically on every push via GitHub Actions.
-- `npm run smoke:pdf` and `npm run smoke:updater` pass (the PDF export path, and that
-  the updater reaches GitHub without crossing the sealed writing window).
+- `npm run smoke:pdf` and `npm run smoke:updater` pass. pdf-smoke renders the real
+  export markup in a real window and is what actually exercises the renderer air gap.
+  updater-smoke only shows the updater can reach GitHub from the main process: it
+  opens no window, so it cannot prove anything about the air gap, and no longer
+  claims to.
+- `npm run check:mutation` passes. It breaks each guarded behaviour in a scratch copy
+  and requires the suite to fail. A green suite is not the same as a suite that would
+  catch a regression, and several tests here once passed on deliberately broken code.
+- `npm run check:package` passes, AFTER `npm run dist`. It inspects what actually went
+  into the build and refuses to publish if a username, home path, session id or dev
+  folder is present. `build.files` is a denylist starting from everything on disk, so
+  anything new in the project root ships by default, and `.gitignore` has no say in it.
+  A privacy check against the git diff cannot catch this: that is how 1.4.3 through
+  1.5.0 shipped a `.claude` folder.
 - After `npm run dist`, `dist\` holds exactly three release files,
   `Flint-Setup-<version>.exe`, its `.exe.blockmap`, and `latest.yml`, and `latest.yml`'s
   `version` matches the exe. A missing or stale `latest.yml` or `.blockmap` silently

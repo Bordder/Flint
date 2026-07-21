@@ -3,8 +3,9 @@
 //   1. it loads and can run a check;
 //   2. it reaches GitHub over the network from the MAIN process
 //      (a nonexistent repo returns 404, which is handled, not crashed);
-//   3. it does NOT travel through the renderer air-gap filter, so the
-//      window that holds your notes stays fully sealed off from the network.
+//   3. it uses its own main-process path rather than the renderer session.
+//      NOTE: this script cannot PROVE the renderer air gap, because it opens no
+//      window. pdf-smoke.js is the one that exercises it for real.
 //   npx electron scripts/updater-smoke.js
 'use strict';
 
@@ -40,7 +41,14 @@ app.on('ready', async () => {
 
   log(!!gotError, `check produced a handled result, no crash: ${gotError ? gotError.slice(0, 70) : 'none'}`);
   log(/404|HttpError|status code/i.test(gotError || ''), 'updater reached GitHub (404 for the nonexistent test repo)');
-  log(blocked === 0, `updater used its own path, not the renderer air-gap (renderer-blocked=${blocked})`);
+  // Deliberately NOT asserted: this script creates no BrowserWindow, and
+  // electron-updater runs in the main process over Node's http stack, which
+  // never passes through session.defaultSession.webRequest. `blocked` is
+  // therefore pinned at 0 whether the air gap exists or not, and asserting on it
+  // proved nothing while reading as proof. Removing the filter entirely from a
+  // scratch copy still produced a pass. The renderer air gap is genuinely
+  // exercised by pdf-smoke.js, which loads real markup in a real window.
+  console.log(`  note  renderer-blocked=${blocked}, not an assertion (no window here; see pdf-smoke.js)`);
 
   console.log(failed ? '\nUpdater smoke test FAILED.' : '\nUpdater smoke test passed.');
   app.exit(failed ? 1 : 0);

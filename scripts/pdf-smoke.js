@@ -38,7 +38,11 @@ app.on('ready', async () => {
     cb(local ? {} : { cancel: true });
   });
 
+  // Cleaned up unless something failed, in which case the PDF is left to look
+  // at. Journal-shaped PDFs accumulating in a world-readable temp folder is the
+  // wrong default for this product: 17 of them had built up before this.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-pdf-'));
+  let keepRoot = true;
   store.init(root);
 
   const data = store.emptyData();
@@ -72,6 +76,7 @@ app.on('ready', async () => {
     const pdf = await toPdf(html);
     const outPath = path.join(root, 'out.pdf');
     fs.writeFileSync(outPath, pdf);
+    keepRoot = false;
 
     const head = pdf.slice(0, 5).toString('latin1');
     log(head === '%PDF-', `output starts with %PDF- (got "${head}")`);
@@ -106,5 +111,7 @@ app.on('ready', async () => {
   const summary = failed ? '\nPDF smoke test FAILED.' : '\nPDF smoke test passed.';
   console.log(summary);
   try { fs.writeFileSync(LOG_PATH, lines.join('\n') + summary + '\n'); } catch { /* best effort */ }
+  if (!failed && !keepRoot) { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } }
+  else console.log(`  output kept for inspection: ${root}`);
   app.exit(failed ? 1 : 0);
 });

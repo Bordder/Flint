@@ -875,7 +875,28 @@ function canAutosave() {
 // deadline is set ONCE when the first unsaved second begins and is not pushed
 // back by later keystrokes (that would be a debounce). Arming off isDirty()
 // rather than off keystrokes keeps discrete edits (mood, tags, a star) covered.
+// A window left open overnight kept writing into yesterday, with the header
+// still reading "Today". currentDate was only ever reset by opening a day or by
+// returning from the tray, and neither happens if nobody touches the window, so
+// a morning entry was silently merged into the previous day: today looked
+// unwritten and the streak broke. The heartbeat is the only thing running, so it
+// is the only thing that can notice.
+let heartbeatDay = todayISO();
+function checkDayRollover() {
+  const today = todayISO();
+  if (today === heartbeatDay) return;
+  heartbeatDay = today;
+  if (currentDate === today) return;
+  // A clean page can simply move. A page with unsaved words must not be yanked
+  // out from under whoever is writing, so it keeps them and the heading stops
+  // claiming to be today.
+  if (!isDirty()) { selectDay(today); return; }
+  renderWriterHead();
+  setStatus('It is past midnight, so this page is yesterday now. It will save to that day.');
+}
+
 function tickAutosave() {
+  checkDayRollover();
   if (!canAutosave()) { renderIndicator('paused'); return; }
   if (!isDirty()) { autosaveDeadline = 0; renderIndicator('saved'); return; }
   renderIndicator('dirty');
@@ -2439,7 +2460,11 @@ function buildChangePinForm() {
     if (a.input.value.length < 4) { msg.textContent = 'Choose a new PIN of at least 4 characters.'; msg.classList.add('error'); return; }
     if (a.input.value !== b.input.value) { msg.textContent = 'The two new PINs are not the same.'; msg.classList.add('error'); return; }
     btn.disabled = true; msg.classList.remove('error'); msg.textContent = 'Re-locking your journal with a new key…';
-    const res = await safeCall(api.changeEncryptionPin, cur.input.value, a.input.value);
+    let res = await safeCall(api.changeEncryptionPin, cur.input.value, a.input.value);
+    if (!res.ok && res.damagedPhotos && await confirmSkipDamaged(res, 'Change my PIN')) {
+      msg.textContent = 'Re-locking your journal with a new key…';
+      res = await safeCall(api.changeEncryptionPin, cur.input.value, a.input.value, { skipDamaged: true });
+    }
     btn.disabled = false;
     // Changing the PIN rotates the key, which issues a new recovery code. The
     // old code stops working, so the user must be shown and keep the new one.
@@ -2447,6 +2472,30 @@ function buildChangePinForm() {
     else { msg.textContent = res.error || 'The PIN could not be changed.'; msg.classList.add('error'); cur.input.value = ''; cur.input.focus(); }
   });
   return form;
+}
+
+// A photo that no longer decrypts blocks turning encryption off and changing the
+// PIN, and no amount of retrying will fix it. Rather than repeating "please try
+// again" for ever, say plainly that it cannot be recovered and offer to go on
+// without it. The damaged file is left untouched either way.
+async function confirmSkipDamaged(res, what) {
+  const names = res.damagedPhotos || [];
+  if (!names.length) return false;
+  const n = names.length;
+  const choice = await showModal({
+    title: n === 1 ? 'One photo cannot be read' : `${n} photos cannot be read`,
+    body: `${res.error}
+
+${n === 1 ? 'File' : 'Files'}: ${names.join(', ')}
+
+The damaged ${n === 1 ? 'file stays' : 'files stay'} in your journal folder untouched, in case you want to try to recover ${n === 1 ? 'it' : 'them'} another way.`,
+    buttons: [
+      { label: `${what} anyway`, value: 'skip', kind: 'danger' },
+      { label: 'Leave things as they are', value: 'stop', kind: 'primary' }
+    ],
+    focusValue: 'stop'
+  });
+  return choice === 'skip';
 }
 
 function buildAutoLockControl() {
@@ -2479,9 +2528,17 @@ function buildDisableForm() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); msg.classList.remove('error');
     btn.disabled = true;
-    const res = await safeCall(api.disableEncryption, cur.input.value);
+    let res = await safeCall(api.disableEncryption, cur.input.value);
+    if (!res.ok && res.damagedPhotos && await confirmSkipDamaged(res, 'Turn encryption off')) {
+      res = await safeCall(api.disableEncryption, cur.input.value, { skipDamaged: true });
+    }
     btn.disabled = false;
-    if (res.ok) renderSecuritySettings('Encryption is off. Your entries are readable files again.');
+    if (res.ok) {
+      const left = (res.damagedPhotos || []).length;
+      renderSecuritySettings(left
+        ? `Encryption is off. Your entries are readable files again. ${left} damaged ${left === 1 ? 'photo was' : 'photos were'} left as ${left === 1 ? 'it is' : 'they are'}.`
+        : 'Encryption is off. Your entries are readable files again.');
+    }
     else { msg.textContent = res.error || 'Encryption could not be turned off.'; msg.classList.add('error'); cur.input.value = ''; cur.input.focus(); }
   });
   wrap.append(head, p, form);

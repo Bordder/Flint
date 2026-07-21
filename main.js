@@ -1159,14 +1159,14 @@ ipcMain.handle('security:enable', async (_e, pin) => {
   catch (err) { return { ok: false, error: err.message }; }
 });
 
-ipcMain.handle('security:disable', async (_e, pin) => {
-  try { return await store.disableEncryption(String(pin)); }
+ipcMain.handle('security:disable', async (_e, pin, opts) => {
+  try { return await store.disableEncryption(String(pin), { skipDamaged: Boolean(opts && opts.skipDamaged) }); }
   catch (err) { return { ok: false, error: err.message }; }
 });
 
-ipcMain.handle('security:change-pin', async (_e, currentPin, newPin) => {
+ipcMain.handle('security:change-pin', async (_e, currentPin, newPin, opts) => {
   if (!validEncPin(newPin)) return { ok: false, error: `Choose a new PIN of ${ENC_PIN_MIN} to ${ENC_PIN_MAX} characters.` };
-  try { return await store.changeEncryptionPin(String(currentPin), String(newPin)); }
+  try { return await store.changeEncryptionPin(String(currentPin), String(newPin), { skipDamaged: Boolean(opts && opts.skipDamaged) }); }
   catch (err) { return { ok: false, error: err.message }; }
 });
 

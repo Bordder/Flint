@@ -1,6 +1,16 @@
-// Smoke test for the tray / background main-process paths (not shipped).
-// These are the parts the browser harness cannot reach, because it mocks the
-// Electron API entirely. Run with:
+// Smoke test for the ELECTRON BEHAVIOURS main.js relies on (not shipped).
+//
+// Read this before trusting it: this script does NOT require main.js and cannot
+// verify main.js. It was previously worded as though it did, and passed 14/14
+// with main.js deleted from the tree. What it actually checks is that the
+// platform behaves the way main.js assumes: that a show:false window reports its
+// page as visible until hidden, that hide and show fire and minimise does not,
+// that a tray icon can be built from the shipped .ico, and that powerMonitor
+// exists. If one of these ever changes in a future Electron, main.js is wrong
+// and this is where you find out.
+//
+// To verify main.js itself, launch it: `electron . --hidden` against Flint-Dev
+// and assert from outside that no window is visible.
 //   npx electron scripts/tray-smoke.js
 //
 // It never writes the login item and never touches the real journal: it only
@@ -58,13 +68,13 @@ app.on('ready', async () => {
 
   const beforeHide = await win.webContents.executeJavaScript('document.visibilityState');
   log(win.isVisible() === false, 'a show:false window is not visible to the OS');
-  log(beforeHide === 'visible', 'BUG CONFIRMED: its page still reports visibilityState=visible', `got "${beforeHide}"`);
+  log(beforeHide === 'visible', 'a show:false window still reports visibilityState=visible, so main.js must hide it explicitly', `got "${beforeHide}"`);
 
   // the fix: hide it explicitly on the startHidden branch
   win.hide();
   await wait(300);
   const afterHide = await win.webContents.executeJavaScript('document.visibilityState');
-  log(afterHide === 'hidden', 'FIX WORKS: after win.hide() the page reports hidden', `got "${afterHide}"`);
+  log(afterHide === 'hidden', 'hiding a window DOES mark its page hidden, which is what main.js relies on', `got "${afterHide}"`);
 
   // 4. hide / show events fire, which is what drives the away counter. These
   // must be distinguishable from minimise, which is why main listens to these
@@ -110,8 +120,11 @@ app.on('ready', async () => {
   }
 
   // 8. The dev build must be isolated from the installed app's data.
-  log(app.getPath('userData').endsWith('Flint-Dev'), 'the testing build is pointed at its own data folder', app.getPath('userData'));
-  log(!app.isPackaged, 'running unpackaged, so the login-item guard in main.js applies');
+  // Deliberately NOT assertions: this script SET userData itself 90 lines ago,
+  // and !app.isPackaged is structurally always true under `electron scripts/...`.
+  // Asserting either proved nothing about main.js while reading as though it did.
+  console.log(`  note  userData is ${app.getPath('userData')} (set by this script, not by main.js)`);
+  console.log(`  note  app.isPackaged=${app.isPackaged} (always false when run this way)`);
 
   if (tray) { try { tray.destroy(); } catch { /* already gone */ } }
   win.destroy();

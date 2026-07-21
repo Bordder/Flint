@@ -102,6 +102,24 @@ const MEDIA_TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'imag
 const MEDIA_ID = /^[a-f0-9]{24}\.(jpg|jpeg|png|gif|webp)$/i;
 const MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 
+// The extension is a claim, not evidence. Flint renders attachments back into
+// the writing window, so accepting anything renamed to .png means a file the
+// renderer will try to interpret gets in on nothing but its name. The first
+// bytes are checked against the type the extension claims.
+const MEDIA_SIGNATURES = {
+  'image/jpeg': [[0xFF, 0xD8, 0xFF]],
+  'image/png': [[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]],
+  'image/gif': [[0x47, 0x49, 0x46, 0x38, 0x37, 0x61], [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]],
+  // RIFF....WEBP: bytes 4-7 are the length, so they are not part of the match.
+  'image/webp': [[0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]]
+};
+function looksLikeType(buf, type) {
+  const sigs = MEDIA_SIGNATURES[type];
+  if (!sigs) return false;
+  return sigs.some((sig) => sig.length <= buf.length
+    && sig.every((b, i) => b === null || buf[i] === b));
+}
+
 // Ids come back from the renderer, so never trust one as a path: only an exact
 // id shape is allowed anywhere near the filesystem.
 function isSafeMediaId(id) { return typeof id === 'string' && MEDIA_ID.test(id); }
@@ -125,8 +143,29 @@ async function addMedia(sourcePath) {
   const type = MEDIA_TYPES[ext];
   if (!type) return { ok: false, error: 'That kind of file cannot be attached.' };
   if (encryptedOnDisk && !sessionDk) return { ok: false, error: 'Your journal is locked.' };
-  const bytes = await fsp.readFile(sourcePath);
+
+  // Size checked from the directory entry, BEFORE reading. This used to read the
+  // whole file and then measure it, so pointing it at a huge file pulled all of
+  // it into memory just to refuse it.
+  let stat;
+  try { stat = await fsp.stat(sourcePath); }
+  catch (err) { return { ok: false, error: `That file could not be opened (${err.code || 'unreadable'}).` }; }
+  if (!stat.isFile()) return { ok: false, error: 'That is not a file.' };
+  if (stat.size > MEDIA_MAX_BYTES) return { ok: false, error: 'That image is bigger than 20 MB.' };
+
+  // Wrapped: an unreadable or vanished file threw straight out of the IPC
+  // handler, which surfaced as an unexplained failure with no message.
+  let bytes;
+  try { bytes = await fsp.readFile(sourcePath); }
+  catch (err) { return { ok: false, error: `That file could not be read (${err.code || 'unreadable'}).` }; }
+  // Re-checked after the read: the file could have grown between the two. This
+  // duplication is deliberate, and it means removing the stat check above changes
+  // no observable behaviour, only how much memory a refusal costs. There is no
+  // mutant for it for that reason; see the note at the end of MUTANTS.
   if (bytes.length > MEDIA_MAX_BYTES) return { ok: false, error: 'That image is bigger than 20 MB.' };
+  if (!looksLikeType(bytes, type)) {
+    return { ok: false, error: `That file is named ${ext} but its contents are not ${ext.slice(1).toUpperCase()}, so it was not attached.` };
+  }
   // About to write a photo in the clear? Check the disk first, exactly as
   // doSaveData does before writing plaintext words. If the in-memory flag has
   // drifted and the journal on disk is really a vault, refuse rather than drop a
@@ -203,12 +242,29 @@ async function rewriteMediaPrepare(dk, encrypt) {
         : vaultCrypto.decryptBuffer(dk, blob.subarray(MEDIA_MAGIC.length));
       await writeFileAtomicRaw(sidecar, out);
       prepared.push({ file, sidecar });
-    } catch {
-      failed.push(name);
+    } catch (err) {
+      // "Try again" is only honest advice when trying again could work. A file
+      // held open by another program will free up; one that is truncated, is a
+      // directory, or no longer decrypts never will. Telling someone to retry
+      // forever left them permanently unable to turn encryption off or change
+      // their PIN, with no way to find out why.
+      const code = err && err.code;
+      const transient = code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+        || code === 'EMFILE' || code === 'ENFILE' || code === 'ETIMEDOUT';
+      failed.push({ name, transient: Boolean(transient) });
     }
   }
   return { prepared, failed };
 }
+
+// Splits a failure list into the two kinds, so callers can offer to retry the
+// first and to continue without the second.
+function splitFailures(failed) {
+  const transient = failed.filter((f) => f.transient).map((f) => f.name);
+  const damaged = failed.filter((f) => !f.transient).map((f) => f.name);
+  return { transient, damaged };
+}
+function countWord(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
 
 function emptyData() {
   return { version: 1, entries: {} };
@@ -2039,7 +2095,7 @@ function enableEncryption(pin) {
 }
 
 // Turn encryption off, writing the journal back as plaintext. Requires the PIN.
-function disableEncryption(pin) {
+function disableEncryption(pin, opts = {}) {
   return runExclusive(async () => {
     const s = await requireVaultState();
     if (s.state !== 'vault') { encryptedOnDisk = false; clearSessionDk(); sessionVault = null; return { ok: true }; }
@@ -2062,11 +2118,22 @@ function disableEncryption(pin) {
     // this function: a photo still encrypted after that is lost. Phase one
     // touches no original, so giving up here really does change nothing.
     const { prepared, failed } = await rewriteMediaPrepare(dk, false);
-    if (failed.length) {
+    const { transient, damaged } = splitFailures(failed);
+    if (transient.length) {
       await mediaSidecarAbort(prepared);
       return {
         ok: false,
-        error: `Encryption was left ON because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be unlocked just now (they may be open in another program). Nothing was changed. Please try again.`
+        error: `Encryption was left ON because ${countWord(transient.length, 'photo', 'photos')} could not be unlocked just now (they may be open in another program). Nothing was changed. Please try again.`
+      };
+    }
+    // Damaged files will never come back, so retrying forever is not an answer.
+    // Say so once, name them, and let the caller decide to go on without them.
+    if (damaged.length && !opts.skipDamaged) {
+      await mediaSidecarAbort(prepared);
+      return {
+        ok: false,
+        damagedPhotos: damaged,
+        error: `${countWord(damaged.length, 'photo', 'photos')} in your journal cannot be read any more, so ${damaged.length === 1 ? 'it' : 'they'} cannot be unlocked. Trying again will not change that. You can turn encryption off without ${damaged.length === 1 ? 'it' : 'them'}, and the damaged ${damaged.length === 1 ? 'file is' : 'files are'} left exactly as ${damaged.length === 1 ? 'it is' : 'they are'}.`
       };
     }
     const stuck = await mediaSidecarCommit(prepared);
@@ -2090,7 +2157,8 @@ function disableEncryption(pin) {
     // A deliberate turn-off is the only thing allowed to clear the sticky flag,
     // otherwise plaintext saves would be refused for the rest of the session.
     encryptedEverThisSession = false;
-    return { ok: true };
+    const left = splitFailures(failed).damaged;
+    return { ok: true, damagedPhotos: left.length ? left : undefined };
   });
 }
 
@@ -2122,8 +2190,11 @@ async function rekeyMediaPrepare(oldDk, newDk) {
       const raw = isEncryptedBlob(blob) ? vaultCrypto.decryptBuffer(oldDk, blob.subarray(MEDIA_MAGIC.length)) : blob;
       await writeFileAtomicRaw(sidecar, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(newDk, raw)]));
       prepared.push({ file, sidecar });
-    } catch {
-      failed.push(name);
+    } catch (err) {
+      const code = err && err.code;
+      const transient = code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+        || code === 'EMFILE' || code === 'ENFILE' || code === 'ETIMEDOUT';
+      failed.push({ name, transient: Boolean(transient) });
     }
   }
   return { prepared, failed };
@@ -2206,15 +2277,27 @@ async function rekeyBackups(oldDk, newDk, newVault) {
 // it, and wraps it under the new PIN and a fresh recovery code. This is what
 // makes "change my PIN" true: afterwards the old PIN and the old recovery code
 // open nothing that still exists.
-async function rotateToNewKey(data, oldDk, newPin) {
+async function rotateToNewKey(data, oldDk, newPin, opts = {}) {
   const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, newPin);
   const { prepared, failed } = await rekeyMediaPrepare(oldDk, dk);
-  if (failed.length) {
+  const { transient, damaged } = splitFailures(failed);
+  if (transient.length) {
     // Every original is still on the old key, so this really is a clean no-op.
     await mediaSidecarAbort(prepared);
     return {
       ok: false,
-      error: `Nothing was changed, because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be re-locked just now (they may be open in another program). Your PIN is unchanged and every photo is exactly as it was. Please try again.`
+      error: `Nothing was changed, because ${countWord(transient.length, 'photo', 'photos')} could not be re-locked just now (they may be open in another program). Your PIN is unchanged and every photo is exactly as it was. Please try again.`
+    };
+  }
+  // A photo that no longer decrypts cannot be moved to the new key however many
+  // times you ask. It is already unreadable, so going on without it costs
+  // nothing, but that has to be the user's decision rather than a silent skip.
+  if (damaged.length && !opts.skipDamaged) {
+    await mediaSidecarAbort(prepared);
+    return {
+      ok: false,
+      damagedPhotos: damaged,
+      error: `${countWord(damaged.length, 'photo', 'photos')} in your journal cannot be read any more, so ${damaged.length === 1 ? 'it' : 'they'} cannot be moved to a new PIN. Trying again will not change that. You can change your PIN without ${damaged.length === 1 ? 'it' : 'them'}, and the damaged ${damaged.length === 1 ? 'file is' : 'files are'} left exactly as ${damaged.length === 1 ? 'it is' : 'they are'}.`
     };
   }
   // Commit the vault FIRST: it holds the wraps for the new key, so from here the
@@ -2226,11 +2309,11 @@ async function rotateToNewKey(data, oldDk, newPin) {
   setSessionDk(dk);
   sessionVault = vault;
   encryptedOnDisk = encryptedEverThisSession = true;
-  return { ok: true, recoveryCode, removedBackups: removed, stuckPhotos: stuck.length };
+  return { ok: true, recoveryCode, removedBackups: removed, stuckPhotos: stuck.length, damagedPhotos: damaged.length ? damaged : undefined };
 }
 
 // Change the PIN. This rotates the data key, so a NEW recovery code is issued.
-function changeEncryptionPin(currentPin, newPin) {
+function changeEncryptionPin(currentPin, newPin, opts = {}) {
   return runExclusive(async () => {
     const s = await requireVaultState();
     if (s.state !== 'vault') return { ok: false, error: 'Your journal is not encrypted.' };
@@ -2249,7 +2332,7 @@ function changeEncryptionPin(currentPin, newPin) {
       }
       return { ok: false, error: 'Your current PIN did not work.' };
     }
-    return rotateToNewKey(data, dk, newPin);
+    return rotateToNewKey(data, dk, newPin, opts);
   });
 }
 
@@ -2257,7 +2340,7 @@ function changeEncryptionPin(currentPin, newPin) {
 // PIN (that is why they used the code), so they must choose a new one, and that
 // rotation is what genuinely retires BOTH the forgotten PIN and the spent code:
 // afterwards neither opens anything that still exists. Returns a fresh code.
-function resetSecretsAfterRecovery(newPin) {
+function resetSecretsAfterRecovery(newPin, opts = {}) {
   return runExclusive(async () => {
     const s = await requireVaultState();
     if (s.state !== 'vault') return { ok: false, error: 'Your journal is not encrypted.' };
@@ -2271,7 +2354,7 @@ function resetSecretsAfterRecovery(newPin) {
     let data;
     try { data = vaultCrypto.openWithDk(s.vault, sessionDk); }
     catch { return { ok: false, error: 'Flint could not read your journal with the key it holds. Unlock again and try that once more.' }; }
-    return rotateToNewKey(data, sessionDk, newPin);
+    return rotateToNewKey(data, sessionDk, newPin, opts);
   });
 }
 
