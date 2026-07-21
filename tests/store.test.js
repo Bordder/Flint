@@ -414,22 +414,32 @@ async function main() {
   // silence and their reminders stop after the next reboot.
   await test('start-with-Windows falls back to the old combined setting, then splits cleanly', async () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-startup-'));
+    const guardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-guard-'));
     const upgradeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-upgrade-'));
     try {
       store.init(tmpRoot);
       assert.strictEqual(await store.getStartWithWindows(), false, 'a brand new install starts off');
 
-      // H2. Turning the tray on is NOT a decision about Windows startup. The
-      // upgrade fallback used to read the value this had just written, so
-      // ticking "keep Flint running" silently added a Run entry the setting
-      // beside it promises it never adds.
+      // H2, and this needs its OWN root. Reading getStartWithWindows even once
+      // materialises the key onto disk, after which setRunInBackground's guard
+      // (`if (s.startWithWindows === undefined)`) is unreachable and this
+      // assertion passes no matter what the guard does. Start from settings
+      // that have never been read, exactly as a real user's would be.
+      const PG2 = store.init(guardRoot);
+      fs.writeFileSync(PG2.settingsFile, JSON.stringify({ onboarded: true }), 'utf8');
       assert.strictEqual(await store.setRunInBackground(true), true);
+      const pinned = JSON.parse(fs.readFileSync(PG2.settingsFile, 'utf8'));
+      assert.strictEqual(
+        pinned.startWithWindows, false,
+        'turning the tray on pins startup to false ON DISK rather than leaving it to be inferred'
+      );
       assert.strictEqual(
         await store.getStartWithWindows(), false,
         'turning the tray on does not turn start-with-Windows on'
       );
 
       // once answered explicitly, the two are independent in both directions
+      store.init(tmpRoot);
       assert.strictEqual(await store.setStartWithWindows(true), true);
       assert.strictEqual(await store.setRunInBackground(false), false);
       assert.strictEqual(await store.getStartWithWindows(), true, 'turning the tray off does not turn startup off');
@@ -748,7 +758,12 @@ async function main() {
 
   await test('a locked journal will not hand back an attachment', async () => {
     store.lock();
-    assert.strictEqual((await store.getMedia(mediaId)).ok, false, 'refused while locked');
+    const locked = await store.getMedia(mediaId);
+    assert.strictEqual(locked.ok, false, 'refused while locked');
+    // The MESSAGE matters: without the lock check the decrypt fails instead and
+    // says the attachment could not be decrypted, which reads as corruption to
+    // someone whose diary is at stake.
+    assert.match(locked.error, /locked/i, 'and says it is locked, not damaged');
     await store.unlock('4321');
   });
 
@@ -871,17 +886,27 @@ async function main() {
       // B's vault appears where A's used to be (a restore from the wrong folder)
       fs.writeFileSync(PA.dataFile, foreignVault);
 
+      // openVault's guard, ON ITS OWN. No securityStatus() call in between, or
+      // its independent duplicate mismatch check drops the key instead and this
+      // passes with openVault's guard deleted. The sequence below is reachable
+      // in the app, and with the guard gone the next save reseals a new body
+      // under the foreign vault's wraps: a journal that opens for neither PIN.
       const res = await store.loadData();
       assert.strictEqual(res.locked, true, 'the foreign vault reports locked, not corrupt');
+      const before = fs.readFileSync(PA.dataFile);
+      await assert.rejects(
+        () => store.saveData(d), /locked/i,
+        'saving straight after the failed decrypt is refused, with no securityStatus in between'
+      );
+      assert.ok(fs.readFileSync(PA.dataFile).equals(before), 'the foreign vault is byte-identical afterwards');
+      // it must still open with its OWN pin, proving it was never resealed
+      assert.strictEqual((await store.unlock('bbbb1111')).ok, true, 'the foreign vault still opens with its own PIN');
+      store.lock();
+
+      // and securityStatus's own guard, separately
       assert.strictEqual(
         (await store.securityStatus()).unlocked, false,
         'the key that could not open it was dropped, so the session is locked'
-      );
-      // and the save that would have destroyed it is refused
-      await assert.rejects(() => store.saveData(d), /locked/i, 'saving is refused while locked');
-      assert.strictEqual(
-        JSON.parse(fs.readFileSync(PA.dataFile, 'utf8')).flintEncrypted, 1,
-        'the foreign vault is left exactly as found'
       );
     } finally {
       store.init(root);
@@ -1324,8 +1349,18 @@ async function main() {
       await store.setOnboarded(true);
       const stamped = (await store.getStartedOn()).startedOn;
       assert.match(stamped, /^\d{4}-\d{2}-\d{2}$/, 'a local date was stamped');
+      // Re-onboarding on the SAME day cannot detect an overwrite: the new value
+      // would be identical. Plant an older date, as a real returning user has,
+      // so moving it is visible. Otherwise a starter week silently restarts.
+      const P1 = store.paths();
+      const s1 = JSON.parse(fs.readFileSync(P1.settingsFile, 'utf8'));
+      s1.startedOn = '2020-01-01';
+      fs.writeFileSync(P1.settingsFile, JSON.stringify(s1), 'utf8');
       await store.setOnboarded(true);
-      assert.strictEqual((await store.getStartedOn()).startedOn, stamped, 'a later run does not move it');
+      assert.strictEqual(
+        (await store.getStartedOn()).startedOn, '2020-01-01',
+        'a later run does not move an existing stamp'
+      );
     } finally {
       store.init(root);
     }
@@ -1341,6 +1376,33 @@ async function main() {
     const avoid = ['gratitude', 'savor', 'forward'];
     for (let off = 0; off < 48; off++) {
       assert.ok(!avoid.includes(prompts.promptForDay('2026-07-17', off, avoid).cat), `offset ${off} avoids cheery categories`);
+    }
+
+    // The three assertions above all pass if the picker ignores the date, the
+    // offset, or both, which is how a live cycling bug shipped unnoticed. These
+    // pin the two behaviours the names actually promise.
+    const overDays = new Set();
+    for (let i = 0; i < 28; i++) {
+      const d = new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+      overDays.add(prompts.promptForDay(d, 0, []).text);
+    }
+    assert.ok(overDays.size >= 20, `28 consecutive days offer varied prompts (got ${overDays.size} distinct)`);
+
+    // "Show me another" must actually move, and cycling must reach every
+    // allowed prompt exactly once before repeating, on an ordinary day and on a
+    // Hard one where whole categories are filtered out.
+    for (const cats of [[], avoid]) {
+      const pool = prompts.PROMPT_LIBRARY.filter((p) => !cats.includes(p.cat));
+      const seen = [];
+      for (let off = 0; off < pool.length; off++) seen.push(prompts.promptForDay('2026-07-17', off, cats).text);
+      assert.strictEqual(
+        new Set(seen).size, pool.length,
+        `cycling reaches every allowed prompt exactly once (avoid=[${cats}], ${new Set(seen).size} of ${pool.length})`
+      );
+      assert.strictEqual(
+        prompts.promptForDay('2026-07-17', pool.length, cats).text, seen[0],
+        `cycling wraps after the whole pool (avoid=[${cats}])`
+      );
     }
   });
 

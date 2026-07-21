@@ -49,13 +49,18 @@ function promptForDay(iso, offset, avoidCats) {
   const lib = PROMPT_LIBRARY;
   if (!lib.length) return null;
   const avoid = new Set(avoidCats || []);
+  // Filter FIRST, then index into what is left. Scanning forward through the
+  // unfiltered library made the offset-to-prompt map many-to-one: the avoided
+  // categories sit in one contiguous block, so on a Hard day pressing "Show me
+  // another" changed nothing roughly a third of the time, and every offset past
+  // a point returned the same prompt. Indexing the filtered pool means one
+  // press is always one new prompt, and cycling walks the pool exactly once
+  // before wrapping.
+  const pool = lib.filter((p) => !avoid.has(p.cat));
+  const from = pool.length ? pool : lib; // everything avoided: better something than nothing
   const base = dayNumber(iso) + (Number(offset) || 0);
-  for (let i = 0; i < lib.length; i++) {
-    const idx = (((base + i) % lib.length) + lib.length) % lib.length;
-    if (!avoid.has(lib[idx].cat)) return lib[idx];
-  }
-  const idx = ((base % lib.length) + lib.length) % lib.length;
-  return lib[idx];
+  const idx = ((base % from.length) + from.length) % from.length;
+  return from[idx];
 }
 
 if (typeof module !== 'undefined' && module.exports) {
