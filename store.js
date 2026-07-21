@@ -228,6 +228,19 @@ function isReservedKey(key) {
   return key === 'updatedAt' || key.startsWith('__');
 }
 
+// Prompt keys additionally may not be 'note', which is where the day's own body
+// is stored. A prompt keyed 'note' writes its answer into the body field, the
+// body then overwrites it, both editors fill from the same value, and every
+// export prints the day twice.
+//
+// This is deliberately NOT folded into isReservedKey. That function also decides
+// what counts as content, and reserving 'note' there makes entryHasAny() return
+// false for a day that holds only a body, which sends a deliberate save down the
+// empty-day branch and DELETES it. Tested: it does exactly that.
+function isReservedPromptKey(key) {
+  return isReservedKey(key) || key === 'note';
+}
+
 function isValidData(d) {
   return (
     d !== null &&
@@ -500,10 +513,10 @@ function normaliseQuestions(list) {
   for (const q of list.slice(0, MAX_QUESTIONS)) {
     if (!looksLikeQuestion(q)) continue;
     let key = typeof q.key === 'string' ? q.key.trim() : '';
-    if (!key || isReservedKey(key) || usedKeys.has(key)) {
+    if (!key || isReservedPromptKey(key) || usedKeys.has(key)) {
       do {
         key = 'p' + crypto.randomBytes(6).toString('hex');
-      } while (usedKeys.has(key) || isReservedKey(key));
+      } while (usedKeys.has(key) || isReservedPromptKey(key));
     }
     usedKeys.add(key);
     cleaned.push({
@@ -1026,8 +1039,24 @@ async function backupMedia(destRoot) {
   let copied = 0, failed = 0;
   for (const id of ids) {
     const to = path.join(dest, id);
-    try { await fsp.access(to); continue; } catch { /* not copied yet */ }
-    try { await fsp.copyFile(mediaPath(id), to); copied++; } catch { failed++; }
+    // "Does a file with this name exist" was the wrong question. Attachment ids
+    // never change, so once a photo had been copied in the clear it was skipped
+    // for ever, and turning encryption on left the readable copy sitting there.
+    // Compare size and modification time instead. Deliberately not the first few
+    // bytes: rekeyMedia rewrites files under a new key with the same magic
+    // prefix, so the header cannot tell an old copy from a current one.
+    try {
+      const [src, dst] = await Promise.all([fsp.stat(mediaPath(id)), fsp.stat(to)]);
+      if (src.size === dst.size && Math.abs(src.mtimeMs - dst.mtimeMs) < 2000) continue;
+    } catch { /* missing at the destination, or unreadable: copy it */ }
+    try {
+      await fsp.copyFile(mediaPath(id), to);
+      // copyFile carries the source timestamps over on some platforms and not
+      // others, so pin them: the comparison above depends on them matching.
+      const src = await fsp.stat(mediaPath(id));
+      await fsp.utimes(to, src.atime, src.mtime).catch(() => {});
+      copied++;
+    } catch { failed++; }
   }
   return { copied, failed };
 }
@@ -1073,6 +1102,13 @@ function runScheduledBackup() {
     if (!fs.existsSync(P.dataFile)) return { ok: false, error: 'There is nothing to back up yet.' };
     const dir = path.join(cfg.folder, BACKUP_SUBFOLDER);
     await fsp.mkdir(dir, { recursive: true });
+    // If encryption was turned on while this drive was unplugged, the sweep that
+    // should have removed the readable copies never reached them. Catch up now,
+    // before adding to the folder.
+    if (encryptedOnDisk) {
+      await purgePlaintextIn(dir, BACKUP_PATTERN).catch(() => 0);
+      await purgeExternalPlaintextMedia(dir).catch(() => 0);
+    }
     const dest = path.join(dir, await nextBackupSlot(cfg.keep));
     await fsp.copyFile(P.dataFile, dest);
     // copyFile brings the source's timestamps with it, so without this every
@@ -1864,7 +1900,36 @@ async function purgeExternalPlaintextBackups() {
   if (!cfg.folder || !isSafeBackupFolder(cfg.folder)) return { reachable: false, left: 0 };
   const dir = path.join(cfg.folder, BACKUP_SUBFOLDER);
   try { await fsp.access(dir); } catch { return { reachable: false, left: 0 }; }
-  return { reachable: true, left: await purgePlaintextIn(dir, BACKUP_PATTERN) };
+  const left = await purgePlaintextIn(dir, BACKUP_PATTERN)
+    + await purgeExternalPlaintextMedia(dir);
+  return { reachable: true, left };
+}
+
+// The journal copies were swept when encryption was turned on, but the photos
+// beside them were not: backupMedia writes them into a `media` subfolder, which
+// matches no backup filename pattern and was never descended into. A readable
+// photograph therefore sat next to an encrypted journal for ever, surviving a
+// PIN change and even removing the photo from the app.
+//
+// Scoped by attachment id, not by "anything that is not encrypted": this is a
+// folder the user chose and it may hold their own files.
+async function purgeExternalPlaintextMedia(dir) {
+  let left = 0;
+  const mediaDir = path.join(dir, 'media');
+  let names;
+  try { names = await fsp.readdir(mediaDir); } catch { return 0; }
+  for (const name of names) {
+    if (!isSafeMediaId(name)) continue;
+    const full = path.join(mediaDir, name);
+    try {
+      const blob = await fsp.readFile(full);
+      if (isEncryptedBlob(blob)) continue; // already encrypted, keep it
+      await fsp.unlink(full);
+    } catch {
+      left++;
+    }
+  }
+  return left;
 }
 
 // Turn encryption on for a currently-plaintext journal. Returns the one-time
@@ -2209,6 +2274,15 @@ async function checkEncryptionPin(pin) {
 // twice before it ever gets here.
 function resetAll() {
   return runExclusive(async () => {
+    // Read where the scheduled copies live BEFORE the delete. settings.json is
+    // inside the data folder, so the same rm destroys the only record of the
+    // backup location: afterwards Flint cannot even tell the user what is left.
+    let backupFolder = '';
+    try {
+      const cfg = await getBackupSettings();
+      if (cfg.folder && isSafeBackupFolder(cfg.folder)) backupFolder = cfg.folder;
+    } catch { /* unreadable settings: nothing we can clean beyond the data folder */ }
+
     clearSessionDk();
     sessionVault = null;
     encryptedOnDisk = false;
@@ -2220,8 +2294,52 @@ function resetAll() {
       return { ok: false, error: `Some files could not be removed (${err.code || err.message}). Close anything using your data folder and try again.` };
     }
     await fsp.mkdir(P.backupsDir, { recursive: true });
-    return { ok: true };
+
+    // "Erase everything" said every entry and backup was gone and there was no
+    // copy left, while whole readable journals sat in the user's chosen backup
+    // folder. Remove the copies Flint made, scoped tightly to the subfolder and
+    // the filenames it writes: the parent is the user's own folder and may hold
+    // their things, so it is never touched.
+    let leftBehind = 0;
+    let cleanedBackupFolder = false;
+    if (backupFolder) {
+      const dir = path.join(backupFolder, BACKUP_SUBFOLDER);
+      try {
+        await fsp.access(dir);
+        for (const name of await fsp.readdir(dir)) {
+          if (!BACKUP_PATTERN.test(name)) continue;
+          try { await fsp.unlink(path.join(dir, name)); } catch { leftBehind++; }
+        }
+        leftBehind += await removeBackedUpMedia(dir);
+        // Only succeeds when we emptied it, which is the point.
+        await fsp.rmdir(dir).catch(() => {});
+        cleanedBackupFolder = true;
+      } catch {
+        // The drive is unplugged, or the folder has gone. Either way the copies
+        // may still exist and we can no longer say where: report the path while
+        // we still hold it.
+        cleanedBackupFolder = false;
+      }
+    } else {
+      cleanedBackupFolder = true; // nothing was ever copied anywhere
+    }
+    return { ok: true, backupFolder, leftBehind, cleanedBackupFolder };
   });
+}
+
+// The media subfolder of an external backup, swept by attachment id only, so a
+// user's own files in a folder they chose are never at risk.
+async function removeBackedUpMedia(dir) {
+  let left = 0;
+  const mediaDir = path.join(dir, 'media');
+  let names;
+  try { names = await fsp.readdir(mediaDir); } catch { return 0; }
+  for (const name of names) {
+    if (!isSafeMediaId(name)) continue;
+    try { await fsp.unlink(path.join(mediaDir, name)); } catch { left++; }
+  }
+  await fsp.rmdir(mediaDir).catch(() => {});
+  return left;
 }
 
 module.exports = {

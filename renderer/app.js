@@ -1111,6 +1111,29 @@ async function undoDelete(date, previous) {
 /* guided prompts toggle */
 
 async function setGuidedMode(on, persist = true) {
+  // Save FIRST, while the prompt boxes are still on the page and still being
+  // read. This function used to reset the snapshot unconditionally at the end,
+  // which marked the whole editor clean without writing anything, so pressing
+  // this button threw away unsaved work in two different ways:
+  //
+  //   Prompt answers were destroyed outright. collectAnswers returns {} while
+  //   guided is false, and buildEntry then falls back to the stored entry, so no
+  //   later save could recover them and toggling back on refilled the boxes from
+  //   disk.
+  //
+  //   The note, mood, tags and feelings were merely declared clean. They stayed
+  //   in memory, but isDirty() said false, so autosave stood down and the close
+  //   guard let them go without a prompt.
+  //
+  // Note the fix is here and NOT in collectAnswers. Making it read the boxes
+  // regardless of `guided` looks like the tidier root fix and corrupts data:
+  // loadEditor only refills those boxes when guided is on, so with prompts off
+  // they still hold the PREVIOUS day's answers, which would then be saved onto
+  // whatever day is open. That was tested, and it does happen.
+  if (persist && isDirty()) {
+    const saved = await saveCurrent({ quiet: true, backup: false, allowDelete: false });
+    if (!saved) return; // leave the mode, the boxes and the snapshot exactly as they were
+  }
   guided = on;
   const gb = $('guided-btn'); gb.setAttribute('aria-pressed', String(on)); gb.classList.toggle('is-on', on);
   $('prompts-wrap').hidden = !on;
@@ -2234,6 +2257,45 @@ function humanDuration(seconds) {
   return 'millions of years';
 }
 
+// How many guesses a WORDLIST attacker needs, or null when this looks like
+// nothing on the list. The character-set sum below is the right model for
+// guessing blindly and badly wrong for the attacker Flint actually has: someone
+// who copied the data folder and runs common passwords against it offline.
+// Measured against a real vault built with this app's own crypto, "password1"
+// fell in 2.29 seconds while the meter called it strong.
+function wordlistGuesses(pin) {
+  const s = String(pin || '');
+  const lower = s.toLowerCase();
+  const list = typeof COMMON_PINS !== 'undefined' ? COMMON_PINS : [];
+  const sufs = typeof COMMON_SUFFIXES !== 'undefined' ? COMMON_SUFFIXES : [''];
+  const prefs = typeof COMMON_PREFIXES !== 'undefined' ? COMMON_PREFIXES : [''];
+
+  // A run of one repeated character, or a straight keyboard/number run.
+  if (/^(.)\1*$/.test(s)) return 100;
+  if (/^(?:0?123456789?0?|9876543210?|abcdefg?h?i?j?)$/.test(lower)) return 100;
+
+  // A listed word, optionally wrapped in the decorations people add to it. The
+  // cost is the list position times the small number of decorations tried, not
+  // the whole character space.
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    for (const p of prefs) {
+      for (const suf of sufs) {
+        if (lower === p + w + suf || lower === p + w.charAt(0).toUpperCase() + w.slice(1) + suf) {
+          return Math.max(50, (i + 1) * prefs.length * sufs.length);
+        }
+      }
+    }
+  }
+  // A listed word with a simple capital and any short tail: still cheap.
+  for (let i = 0; i < list.length; i++) {
+    if (lower.startsWith(list[i]) && s.length - list[i].length <= 4) {
+      return Math.max(200, (i + 1) * 5000);
+    }
+  }
+  return null;
+}
+
 function crackSeconds(pin) {
   const s = String(pin || '');
   let charset = 0;
@@ -2243,7 +2305,12 @@ function crackSeconds(pin) {
   if (/[^a-zA-Z0-9]/.test(s)) charset += 33;
   if (!charset) return 0;
   // On average an attacker finds it half way through the space.
-  return Math.pow(charset, s.length) / 2 / GUESSES_PER_SEC;
+  const blind = Math.pow(charset, s.length) / 2 / GUESSES_PER_SEC;
+  const known = wordlistGuesses(s);
+  // Take the cheaper of the two routes, which is what an attacker would do.
+  // Because this can only ever LOWER an estimate, it cannot introduce a new
+  // overstatement: a genuinely strong PIN is unaffected.
+  return known === null ? blind : Math.min(blind, known / GUESSES_PER_SEC);
 }
 
 function pinStrength(pin) {
@@ -2255,7 +2322,12 @@ function pinStrength(pin) {
     : secs < 60 * 60 * 24 * 30 ? 'fair'
       : secs < 60 * 60 * 24 * 365 * 100 ? 'good'
         : 'strong';
-  return { level, text: `This PIN could be cracked in ${humanDuration(secs)}.` };
+  // Say WHY when the answer comes from the common-password route, or the number
+  // looks arbitrary next to a PIN the user thinks is inventive.
+  if (wordlistGuesses(s) !== null) {
+    return { level, text: `This is a well-known password, or close to one, so it could be cracked in ${humanDuration(secs)}.` };
+  }
+  return { level, text: `This PIN could be cracked in roughly ${humanDuration(secs)}.` };
 }
 
 function attachStrengthHint(input, hint) {
@@ -2551,7 +2623,7 @@ async function saveBackupCfg(next) {
   if (!res.ok) { $('backup-status').textContent = res.error || 'That could not be saved.'; return; }
   backupCfg = res.backup;
   renderBackup();
-  if (backupCfg.enabled) $('backup-status').textContent = 'On. Flint will keep a dated copy there once a day.';
+  if (backupCfg.enabled) $('backup-status').textContent = 'On. Flint will keep a copy there once a day.';
   else if (!backupCfg.folder) $('backup-status').textContent = 'Choose a folder first.';
   else $('backup-status').textContent = 'Off.';
 }
@@ -3174,7 +3246,7 @@ function showSettingsCat(cat) {
 async function resetEverything() {
   const first = await showModal({
     title: 'Erase everything and start over?',
-    body: 'This deletes every entry and backup, your settings, and your PIN, and returns Flint to a brand-new setup. It cannot be undone, and there is no backup once it is gone.',
+    body: 'This deletes every entry, your settings and your PIN, and returns Flint to a brand-new setup. Flint will also remove the copies it made in your backup folder, if it can reach it. It cannot be undone.',
     buttons: [{ label: 'Continue', value: 'go', kind: 'danger' }, { label: 'Keep my journal', value: 'keep', kind: 'primary' }],
     focusValue: 'keep'
   });
@@ -3188,7 +3260,23 @@ async function resetEverything() {
   if (second !== 'erase') return;
   $('reset-status').textContent = 'Erasing…';
   const res = await safeCall(api.resetAll);
-  if (!res.ok) $('reset-status').textContent = res.error || 'That could not be completed.';
+  if (!res.ok) { $('reset-status').textContent = res.error || 'That could not be completed.'; return; }
+  // Reset deletes the settings that record where the backup folder was, so if
+  // anything was left there this is the last moment Flint can name it.
+  if (res.backupFolder && res.cleanedBackupFolder === false) {
+    await showModal({
+      title: 'Copies may still be in your backup folder',
+      body: `Everything on this computer has been erased.\n\nFlint could not reach your backup folder to remove the copies it made there:\n\n${res.backupFolder}\n\nIf you want those gone too, delete the "Flint backups" folder inside it yourself. Flint will not be able to tell you where it was after this.`,
+      buttons: [{ label: 'I understand', value: 'ok', kind: 'primary' }]
+    });
+  } else if (res.leftBehind) {
+    await showModal({
+      title: 'Some copies could not be removed',
+      body: `Everything on this computer has been erased.\n\n${res.leftBehind} ${res.leftBehind === 1 ? 'file' : 'files'} in your backup folder could not be deleted, probably because something else has ${res.leftBehind === 1 ? 'it' : 'them'} open:\n\n${res.backupFolder}\n\nClose anything using that folder and delete the "Flint backups" folder inside it yourself.`,
+      buttons: [{ label: 'I understand', value: 'ok', kind: 'primary' }]
+    });
+  }
+  location.reload();
 }
 
 /* feedback */
@@ -3490,7 +3578,7 @@ async function init() {
     if (!res.ok) { $('backup-status').textContent = res.error || 'That folder could not be used.'; return; }
     backupCfg = res.backup;
     renderBackup();
-    $('backup-status').textContent = 'On. Flint will keep a dated copy there once a day.';
+    $('backup-status').textContent = 'On. Flint will keep a copy there once a day.';
   });
   $('backup-now-btn').addEventListener('click', async () => {
     $('backup-status').textContent = 'Copying…';

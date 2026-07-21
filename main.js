@@ -1201,7 +1201,11 @@ ipcMain.handle('app:reset-all', async () => {
     if (res.ok) {
       // Reset wipes settings, so background mode is off again: drop the tray and
       // the start-with-Windows entry, then come back up as a fresh install.
-      await applyBackgroundMode();
+      await applyBackgroundMode({ background: false, startup: false });
+      // If copies were left behind (an unplugged drive, a locked file), the user
+      // has to be told BEFORE the window reloads and forgets, because the folder
+      // they were in is recorded only in the settings this just deleted.
+      if (res.leftBehind || (res.backupFolder && !res.cleanedBackupFolder)) return res;
       if (win && !win.isDestroyed()) {
         setImmediate(() => { if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache(); });
       }

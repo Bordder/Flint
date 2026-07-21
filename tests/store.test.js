@@ -934,6 +934,115 @@ async function main() {
   // H5. A PIN change rewrote every photo in place under the new key, then threw
   // that key away if any single one failed. Everything already rewritten became
   // unreadable forever, while the message said "Nothing was changed".
+  // U5. A prompt keyed 'note' writes its answer into the day's own body field,
+  // which then overwrites it, and every export prints the day twice.
+  await test('U5: a prompt cannot claim the key the day body uses', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u5-'));
+    store.init(tmpRoot);
+    try {
+      const saved = await store.saveQuestions([
+        { key: 'note', title: 'Shadowing prompt', hint: '' },
+        { key: 'keepme', title: 'An ordinary prompt', hint: '' }
+      ]);
+      assert.ok(Array.isArray(saved) && saved.length === 2, 'both prompts saved');
+      assert.notStrictEqual(saved[0].key, 'note', "'note' is not handed out as a prompt key");
+      assert.match(saved[0].key, /^p[0-9a-f]{12}$/, 'it was replaced with a generated key');
+      assert.strictEqual(saved[1].key, 'keepme', 'ordinary keys are untouched');
+
+      // and a body-only day is still content, which reserving 'note' globally
+      // would have broken by sending a deliberate save down the delete branch
+      const d = store.emptyData();
+      d.entries['2026-06-06'] = { note: 'A body-only day.', updatedAt: 'x' };
+      await store.saveData(d);
+      const back = await store.loadData();
+      assert.strictEqual(back.data.entries['2026-06-06'].note, 'A body-only day.', 'a body-only day survives');
+      const text = store.buildExportText(back.data, { questions: saved, knownTitles: {} });
+      const hits = (text.match(/A body-only day\./g) || []).length;
+      assert.strictEqual(hits, 1, `the body appears once in the export, not twice (got ${hits})`);
+    } finally {
+      store.init(root);
+    }
+  });
+
+  // U3. Turning encryption on swept the journal copies in the external backup
+  // folder but never descended into its media subfolder, so a readable photo sat
+  // beside an encrypted journal for ever, surviving a PIN change and even
+  // removing the photo from the app.
+  await test('U3: enabling encryption clears readable photos from the backup folder too', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u3-'));
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u3-dest-'));
+    const PU = store.init(tmpRoot);
+    try {
+      await store.saveData(store.emptyData());
+      const src = path.join(tmpRoot, 'snap.png');
+      const pngBytes = Buffer.from('89504e470d0a1a0a' + 'c0ffee'.repeat(40), 'hex');
+      fs.writeFileSync(src, pngBytes);
+      const add = await store.addMedia(src);
+      assert.ok(add.ok, `photo stored (${add.error || ''})`);
+
+      assert.ok((await store.setBackupFolder(dest)).ok);
+      await store.setBackupSettings({ enabled: true });
+      assert.ok((await store.runScheduledBackup()).ok, 'backed up while still plaintext');
+
+      const mediaDir = path.join(dest, 'Flint backups', 'media');
+      const copied = path.join(mediaDir, add.id);
+      assert.ok(fs.existsSync(copied), 'the photo was copied out in the clear');
+      assert.ok(fs.readFileSync(copied).equals(pngBytes), 'and is byte-identical to the original');
+
+      const on = await store.enableEncryption('u3pin1234');
+      assert.strictEqual(on.ok, true, 'encryption turned on');
+
+      assert.ok(
+        !fs.existsSync(copied) || !fs.readFileSync(copied).equals(pngBytes),
+        'the readable copy in the backup folder is gone, not left beside the encrypted journal'
+      );
+      // and the next scheduled backup carries the encrypted photo, not the old one
+      assert.ok((await store.runScheduledBackup()).ok, 'a later backup still runs');
+      if (fs.existsSync(copied)) {
+        assert.ok(
+          fs.readFileSync(copied).subarray(0, 9).equals(Buffer.from('FLINTMED1')),
+          'any photo now in the backup folder is encrypted'
+        );
+      }
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  // U4. "Erase everything" promised there was no copy left while whole readable
+  // journals sat in the user's chosen backup folder, and the same delete removed
+  // the only record of where that folder was.
+  await test('U4: erase everything also clears the copies in the backup folder', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u4-'));
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u4-dest-'));
+    store.init(tmpRoot);
+    try {
+      const d = store.emptyData();
+      d.entries['2026-02-02'] = { note: 'CANARY-U4 a private day', updatedAt: 'x' };
+      await store.saveData(d);
+      assert.ok((await store.setBackupFolder(dest)).ok);
+      await store.setBackupSettings({ enabled: true });
+      assert.ok((await store.runScheduledBackup()).ok, 'a copy was made');
+
+      const dir = path.join(dest, 'Flint backups');
+      const before = fs.readdirSync(dir).filter((n) => /^flint-backup-/.test(n));
+      assert.ok(before.length >= 1, 'the external copy exists to begin with');
+      assert.match(fs.readFileSync(path.join(dir, before[0]), 'utf8'), /CANARY-U4/, 'and is readable');
+
+      const res = await store.resetAll();
+      assert.strictEqual(res.ok, true, 'reset succeeded');
+      assert.strictEqual(res.cleanedBackupFolder, true, 'and reports that it reached the backup folder');
+      assert.strictEqual(res.leftBehind, 0, 'with nothing left behind');
+      const after = fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => /^flint-backup-/.test(n)) : [];
+      assert.strictEqual(after.length, 0, 'no readable copies of the journal remain');
+      // the user's own folder is never touched, only the subfolder Flint made
+      assert.ok(fs.existsSync(dest), "the folder the user chose still exists");
+    } finally {
+      store.init(root);
+    }
+  });
+
   // L6. slotParams throws BEFORE any key is derived, so a vault with unusable
   // scrypt settings could not check ANY pin. Reporting that as "your PIN is
   // correct, but the file is damaged" told every guess it had guessed right.

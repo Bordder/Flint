@@ -59,8 +59,8 @@
         <div class="onboard-note">
           <svg class="onboard-note-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
           <span>Adding a PIN encrypts your notes on this computer, so the files cannot be read on
-            their own. How well that holds up depends on the PIN you choose, and Flint will show you
-            how long each one would take to guess.</span>
+            their own. How well that holds up depends on the PIN you choose, and Flint will give you a
+            rough sense of how long each one would take to guess.</span>
         </div>
         <div class="btn-row onboard-actions">
           <button type="button" class="primary" id="onboard-pin-yes">Set up a PIN</button>
@@ -425,7 +425,7 @@
 
           <section class="settings-block">
             <h3>Backups to another folder</h3>
-            <p class="soft">Flint can drop a dated copy of your journal into a folder you choose (a USB stick, or a folder you already sync), once a day. If your journal is encrypted, the copy is encrypted too.</p>
+            <p class="soft">Flint can drop a copy of your journal into a folder you choose (a USB stick, or a folder you already sync), once a day. If your journal is encrypted, the copy is encrypted too. The copies are named plainly, with no dates in the filenames, so the folder does not record when you wrote.</p>
             <label class="toggle-row"><input type="checkbox" id="backup-toggle"><span>Keep a daily copy in another folder</span></label>
             <p class="soft small">Folder: <code id="backup-folder">not chosen yet</code></p>
             <div class="btn-row">
@@ -491,7 +491,7 @@
 
           <section class="settings-block danger-block">
             <h3>Start over</h3>
-            <p class="soft">Erase everything and set Flint up again from scratch: every entry and backup, your settings, and your PIN. This cannot be undone.</p>
+            <p class="soft">Erase everything and set Flint up again from scratch: every entry, your settings, and your PIN. Flint also removes the copies it made in your chosen backup folder, if that folder can be reached. This cannot be undone.</p>
             <div class="btn-row"><button id="reset-btn" class="danger" type="button">Reset everything…</button></div>
             <p id="reset-status" class="status" role="status" aria-live="polite"></p>
           </section>
@@ -531,6 +531,7 @@
 
   <div id="modal-root"></div>
 
+  <script src="../shared/common-pins.js"></script>
   <script src="../shared/questions.js"></script>
   <script src="../shared/templates.js"></script>
   <script src="../shared/prompts.js"></script>
