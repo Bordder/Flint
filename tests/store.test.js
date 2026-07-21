@@ -6,7 +6,8 @@
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
+const path = require("path");
+const fsp = fs.promises;
 
 const store = require('../store');
 const prompts = require('../shared/prompts');
@@ -1109,6 +1110,51 @@ async function main() {
       const first = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
       assert.ok(first.entries && first.entries['2026-04-04'], 'the copy holds the journal');
     } finally {
+      store.init(root);
+    }
+  });
+
+  // Turning encryption OFF decrypts each photo into a .rekey sidecar before
+  // renaming it in. If that rename failed the sidecars were kept, which is right
+  // for a PIN change (the sidecar is then the only copy under the surviving key)
+  // and wrong here: these hold DECRYPTED photo bytes while the originals are
+  // untouched, so keeping them left readable photographs beside an encrypted
+  // journal with nothing to ever remove them. Nothing sweeps .rekey by name.
+  await test('turning encryption off never leaves a decrypted photo sidecar behind', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-sidecar-'));
+    const PS2 = store.init(tmpRoot);
+    try {
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('sidecar1234')).ok, 'encrypted');
+      const ids = [];
+      for (let i = 0; i < 2; i++) {
+        const src = path.join(tmpRoot, `s${i}.png`);
+        fs.writeFileSync(src, Buffer.from('89504e470d0a1a0a' + 'ab'.repeat(50) + String(i).repeat(2), 'hex'));
+        const add = await store.addMedia(src);
+        assert.ok(add.ok, `photo ${i} stored`);
+        ids.push(add.id);
+      }
+
+      // Force the rename step to fail, exactly as a file held open would.
+      const realRename = fsp.rename;
+      fsp.rename = async (from, to) => {
+        if (String(from).endsWith('.rekey')) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+        return realRename(from, to);
+      };
+      let res;
+      try { res = await store.disableEncryption('sidecar1234'); } finally { fsp.rename = realRename; }
+
+      assert.strictEqual(res.ok, false, 'turning encryption off is refused');
+      const leftovers = fs.readdirSync(PS2.mediaDir).filter((n) => n.endsWith('.rekey'));
+      assert.strictEqual(leftovers.length, 0, `no decrypted sidecars are left behind (found ${leftovers.length})`);
+      // and every photo on disk is still encrypted, as the message claims
+      for (const id of ids) {
+        const blob = fs.readFileSync(path.join(PS2.mediaDir, id));
+        assert.ok(blob.subarray(0, 9).equals(Buffer.from('FLINTMED1')), 'the photo is still encrypted');
+      }
+      assert.strictEqual(JSON.parse(fs.readFileSync(PS2.dataFile, 'utf8')).flintEncrypted, 1, 'the journal is still a vault');
+    } finally {
+      store.lock();
       store.init(root);
     }
   });

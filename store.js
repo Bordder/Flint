@@ -189,6 +189,8 @@ async function rewriteMediaPrepare(dk, encrypt) {
   for (const name of names.filter((n) => n.endsWith('.tmp'))) {
     await fsp.unlink(path.join(P.mediaDir, name)).catch(() => {});
   }
+  // Clear any decrypted sidecar left by an interrupted attempt before starting.
+  await sweepPlaintextSidecars();
   for (const name of names.filter(isSafeMediaId)) {
     const file = mediaPath(name);
     const sidecar = `${file}.rekey`;
@@ -2069,9 +2071,13 @@ function disableEncryption(pin) {
     }
     const stuck = await mediaSidecarCommit(prepared);
     if (stuck.length) {
-      // Some photos are readable now and some are not. The vault is still on
-      // disk and we still hold the key, so keeping encryption ON is the state
-      // everything can still be recovered from. Say exactly that.
+      // Delete the sidecars that did NOT make it in. Going the other way, during
+      // a PIN change, a stuck sidecar is the only copy readable under the
+      // surviving key and must be kept. Here it is the opposite: the sidecar
+      // holds DECRYPTED photo bytes, while the original is untouched and we
+      // still hold the key, so keeping it would leave readable photographs
+      // sitting beside an encrypted journal with nothing to ever remove them.
+      await mediaSidecarAbort(prepared);
       return {
         ok: false,
         error: `Encryption was left ON because ${stuck.length} ${stuck.length === 1 ? 'photo' : 'photos'} could not be replaced just now (they may be open in another program). Some photos are already readable, and your journal is unchanged. Close anything using your photos and try again.`
@@ -2127,6 +2133,27 @@ async function rekeyMediaPrepare(oldDk, newDk) {
 // returns the folder to exactly the state we found it in.
 async function mediaSidecarAbort(prepared) {
   for (const p of prepared) await fsp.unlink(p.sidecar).catch(() => {});
+}
+
+// Belt and braces for a crash midway through turning encryption off, which
+// would leave decrypted .rekey sidecars nobody deletes. Only PLAINTEXT ones are
+// swept: a sidecar that is itself encrypted came from a PIN change, where it may
+// be the only copy readable under the surviving key, and removing it would be
+// the loss this whole two-phase design exists to prevent.
+async function sweepPlaintextSidecars() {
+  let names;
+  try { names = await fsp.readdir(P.mediaDir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names.filter((n) => n.endsWith('.rekey'))) {
+    const full = path.join(P.mediaDir, name);
+    try {
+      const blob = await fsp.readFile(full);
+      if (isEncryptedBlob(blob)) continue;
+      await fsp.unlink(full);
+      removed++;
+    } catch { /* unreadable: leave it rather than guess */ }
+  }
+  return removed;
 }
 
 // Move the new-key copies into place. A rename that fails here leaves its
