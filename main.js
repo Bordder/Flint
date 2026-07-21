@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, BrowserWindow, Menu, ipcMain, dialog, session, shell, clipboard, Notification, Tray, nativeImage
+  app, BrowserWindow, Menu, ipcMain, dialog, session, shell, clipboard, Notification, Tray, nativeImage, powerMonitor
 } = require('electron');
 const path = require('path');
 const url = require('url');
@@ -41,6 +41,8 @@ let closing = false;
 let tray = null;
 let quitting = false;          // set when the user really means to quit (tray menu / update install)
 let backgroundActive = false;  // true when "keep in the tray" is on
+let lastWrittenDay = '';       // memory only, for the reminder; never persisted
+let trayOfferPending = false;  // a close is waiting on the one-time tray question
 const startHidden = process.argv.includes('--hidden'); // login-item launches with this
 
 // Only one copy of the app may run, two windows writing one file is how
@@ -56,6 +58,13 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  // Electron only honours this before the app is ready, so it cannot wait for
+  // the async settings API. It is a repair switch for machines where the GPU
+  // path smears text or flickers the caret, which in a writing app is fatal.
+  if (!store.readStartupFlagsSync().hardwareAcceleration) {
+    try { app.disableHardwareAcceleration(); } catch { /* not fatal */ }
+  }
+
   app.whenReady().then(() => {
     lockDownNetwork();
     // No native "File Edit View Help" menu bar, the app has its own in-window
@@ -68,6 +77,19 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(checkReminder, 60 * 1000);
     setTimeout(maybeBackup, 10 * 1000);
     setInterval(maybeBackup, 6 * 60 * 60 * 1000);
+
+    // Locking the Windows session or sleeping the machine are the only two
+    // unambiguous signals that the person has actually left. Lock on both,
+    // whatever the idle setting says: it costs nothing, because they have to
+    // sign back in to Windows anyway, and it does not depend on a renderer
+    // timer surviving a multi-hour suspend.
+    try {
+      for (const ev of ['lock-screen', 'suspend']) {
+        powerMonitor.on(ev, () => {
+          if (win && !win.isDestroyed()) win.webContents.send('app:lock-now');
+        });
+      }
+    } catch { /* powerMonitor is best effort */ }
   });
 }
 
@@ -95,6 +117,12 @@ async function maybeBackup() {
 let reminderFiredOn = null;
 
 async function todayAlreadyWritten() {
+  // What the renderer told us beats what we can read, because in tray mode the
+  // journal is normally locked by reminder time (no mouse or key event reaches a
+  // hidden window, so the idle timer always runs out). Without this the "locked
+  // means we cannot tell" default below fires nearly every evening, nudging
+  // people about days they already wrote.
+  if (lastWrittenDay && lastWrittenDay === todayISO()) return true;
   try {
     const res = await store.loadData();
     if (!res.data) return false; // locked: we cannot tell, so a nudge is fair
@@ -135,33 +163,114 @@ function showWindow() {
   if (win && !win.isDestroyed()) { win.show(); win.focus(); }
   else createWindow();
 }
+// Returns whether there is now a usable tray icon. The caller needs to know:
+// hiding the window into a tray that failed to appear leaves no way back.
 function ensureTray() {
-  if (tray) return;
+  if (tray) return true;
   try {
     const img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.ico'));
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     tray.setToolTip('Flint');
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Open Flint', click: showWindow },
+      // Microsoft's guidance: the way to stop an icon living in the notification
+      // area belongs on that icon's own menu, not only buried in settings.
+      {
+        label: 'Stop keeping Flint in the tray',
+        click: async () => {
+          try { await store.setRunInBackground(false); } catch { /* best effort */ }
+          await applyBackgroundMode({ background: false });
+          showWindow();
+        }
+      },
       { type: 'separator' },
-      { label: 'Quit Flint', click: () => { quitting = true; if (win && !win.isDestroyed()) win.close(); else app.quit(); } }
+      // A question may follow this click, so make sure there is a window to ask on.
+      { label: 'Quit Flint', click: () => { quitting = true; if (win && !win.isDestroyed()) { showWindow(); win.close(); } else app.quit(); } }
     ]));
     tray.on('click', showWindow);
     tray.on('double-click', showWindow);
-  } catch { /* a tray is a nicety; never let it break startup */ }
+    return true;
+  } catch { return false; /* a tray is a nicety; never let it break startup */ }
 }
 function destroyTray() {
   if (tray) { try { tray.destroy(); } catch { /* already gone */ } tray = null; }
 }
-async function applyBackgroundMode() {
-  let on = false;
-  try { on = await store.getRunInBackground(); } catch { on = false; }
-  backgroundActive = on;
-  if (on) ensureTray(); else destroyTray();
-  try { app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] }); } catch { /* best effort */ }
+// opts lets a caller pass the values it just wrote instead of forcing a re-read.
+// A failed read must never be treated as "off": that would destroy the user's
+// startup entry and drop the tray over a transient disk hiccup.
+async function applyBackgroundMode(opts = {}) {
+  let background = opts.background;
+  let startup = opts.startup;
+  if (background === undefined) {
+    try { background = await store.getRunInBackground(); } catch { background = backgroundActive; }
+  }
+  if (startup === undefined) {
+    try { startup = await store.getStartWithWindows(); } catch { startup = background; }
+  }
+  const trayOk = background ? ensureTray() : (destroyTray(), false);
+  // Only claim background mode if there is really an icon to click.
+  backgroundActive = Boolean(background) && trayOk;
+  // The testing build shares productName with the installed app, so writing the
+  // login item from a dev run would point the real Run entry at electron.exe.
+  if (!isDev) {
+    try {
+      // --hidden only makes sense when there is a tray to hide into; otherwise a
+      // sign-in launch would orphan an invisible window with no way to reach it.
+      app.setLoginItemSettings({ openAtLogin: Boolean(startup), args: backgroundActive ? ['--hidden'] : [] });
+    } catch { /* best effort */ }
+  }
   // Safety net: never sit hidden with no tray to reach (e.g. a stale --hidden
-  // launch after background was turned off). If we are not in the tray, show.
-  if (!on && win && !win.isDestroyed() && !win.isVisible()) win.show();
+  // launch after background was turned off, or a tray that failed to appear).
+  if (!backgroundActive && win && !win.isDestroyed() && !win.isVisible()) win.show();
+  return { background: backgroundActive, startup: Boolean(startup), trayOk };
+}
+
+// The one-time "keep Flint in the tray?" question. Asked once in the app's
+// life, and only on a clean close: stacking it on the unsaved-words dialog
+// would be two questions for one click, which is how a helpful prompt becomes a
+// nag. A dirty close just skips it and a later clean close carries it instead.
+async function shouldOfferTray() {
+  if (trayOfferPending || backgroundActive || quitting) return false;
+  try {
+    if (await store.getTrayAsked()) return false;
+    if (!(await store.getOnboarded())) return false;
+    if (await store.getRunInBackground()) return false;
+    // Only once Flint is actually in use. A journal with nothing in it, opened
+    // and closed on the first day, has not earned a question about the tray.
+    const res = await store.loadData();
+    const hasEntry = Boolean(res.data && Object.keys(res.data.entries || {}).length);
+    const { startedOn } = await store.getStartedOn();
+    if (!hasEntry && !(startedOn && startedOn < todayISO())) return false;
+    return true;
+  } catch {
+    return false; // never let a settings problem block a close
+  }
+}
+
+function askTrayOffer() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const handler = (_e, choice) => { clearTimeout(timer); finish(choice === 'tray' ? 'tray' : 'full'); };
+    // Silence must never be taken as consent to a background process plus a tray
+    // icon, so a renderer that does not answer closes fully.
+    const timer = setTimeout(() => { ipcMain.removeListener('app:tray-answer', handler); finish('full'); }, 2500);
+    ipcMain.once('app:tray-answer', handler);
+    win.webContents.send('app:tray-offer');
+  });
+}
+
+// One notification, once ever, the first time the window really does vanish
+// into the tray. Without it the honest reaction is "where did my journal go".
+async function maybeTrayNotice() {
+  try {
+    if (await store.getTrayNoticeShown()) return;
+    await store.setTrayNoticeShown(true);
+    if (!Notification.isSupported()) return;
+    const notif = new Notification({ title: 'Flint', body: 'Still here in the notification area. Click the flame to come back.' });
+    notif.on('click', showWindow);
+    notif.show();
+  } catch { /* a notification is a courtesy, never a blocker */ }
 }
 
 // ------------------------------------------------------------- auto-update
@@ -262,7 +371,23 @@ function createWindow() {
   win.on('maximize', sendMaxState);
   win.on('unmaximize', sendMaxState);
 
-  win.once('ready-to-show', () => { if (!startHidden) win.show(); });
+  // Hidden is not the same as minimised, and only main can tell the difference:
+  // visibilitychange in the renderer fires for both. Being minimised is not
+  // being away, so the renderer is told which one this was.
+  win.on('hide', () => {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('window:hidden', { toTray: backgroundActive });
+    if (backgroundActive) maybeTrayNotice();
+  });
+  win.on('show', () => { if (win && !win.isDestroyed()) win.webContents.send('window:shown'); });
+
+  // A window created with show:false reports its page as *visible* until it is
+  // explicitly hidden, so a login-item launch used to run the renderer entirely
+  // unthrottled until the user first opened the window. Hiding it properly hands
+  // the page to Chromium's background throttling (roughly one timer wake a
+  // minute instead of sixty) and makes visibilitychange fire, which is what the
+  // renderer's own save-on-hide depends on.
+  win.once('ready-to-show', () => { if (startHidden) win.hide(); else win.show(); });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -295,18 +420,54 @@ function createWindow() {
     if (allowClose) return;
     // "Keep in the tray" is on: closing the window just hides it (the words on
     // the page are kept in memory), so no save prompt and the app stays alive.
-    if (backgroundActive && !quitting) { e.preventDefault(); win.hide(); return; }
+    // Hide first so it feels instant, then tell the renderer to save regardless
+    // of the guards it would normally respect. This is the only close path with
+    // no save prompt behind it, so it must not rely on the blur flush alone:
+    // edits that are not typing (a mood, a tag, a star) and anything done with a
+    // dialog already open would otherwise go into the tray unsaved.
+    if (backgroundActive && !quitting) {
+      e.preventDefault();
+      win.hide();
+      win.webContents.send('app:flush-now');
+      return;
+    }
     e.preventDefault();
     if (closing) return;
     closing = true;
     askRendererDirty()
       .then(async (isDirty) => {
         if (!isDirty) {
+          if (await shouldOfferTray()) {
+            trayOfferPending = true;
+            let choice = 'full';
+            try { choice = await askTrayOffer(); } catch { choice = 'full'; }
+            // A dismissed question is an answer: record it either way so this is
+            // asked exactly once, however it ended.
+            try { await store.setTrayAsked(true); } catch { /* best effort */ }
+            trayOfferPending = false;
+            if (choice === 'tray') {
+              try { await store.setRunInBackground(true); } catch { /* best effort */ }
+              const applied = await applyBackgroundMode({ background: true });
+              if (applied.background) {
+                closing = false;
+                win.hide(); // the hide handler raises the one-time "still here" notice
+                win.webContents.send('app:flush-now');
+                return;
+              }
+              // No tray appeared, so hiding would leave no way back. Close instead.
+            } else {
+              try { await store.setRunInBackground(false); } catch { /* best effort */ }
+            }
+          }
           closing = false;
           allowClose = true;
           win.close();
           return;
         }
+        // Never ask a question the user cannot see. Quitting from the tray gets
+        // here with the window hidden, and "Keep writing" would otherwise leave
+        // them with nothing to write in.
+        if (!win.isVisible()) win.show();
         const { response } = await dialog.showMessageBox(win, {
           type: 'question', message: 'You have unsaved words on the page.', buttons: ['Save and close', 'Close without saving', 'Keep writing'], defaultId: 0, cancelId: 2, noLink: true
         });
@@ -346,11 +507,17 @@ function askRendererDirty() {
     };
     // Longer than the renderer's settle-and-save on close; still defaults to
     // "unsaved" (the safe direction) if the renderer never answers.
-    const timer = setTimeout(() => finish(true), 2500);
-    ipcMain.once('app:dirty-reply', (_e, v) => {
+    const handler = (_e, v) => {
       clearTimeout(timer);
       finish(Boolean(v));
-    });
+    };
+    // On timeout the listener must come off too, or a wedged renderer leaves one
+    // behind on every close attempt and a late reply lands on the wrong close.
+    const timer = setTimeout(() => {
+      ipcMain.removeListener('app:dirty-reply', handler);
+      finish(true);
+    }, 2500);
+    ipcMain.once('app:dirty-reply', handler);
     win.webContents.send('app:query-dirty');
   });
 }
@@ -643,8 +810,43 @@ ipcMain.handle('background:get', async () => {
   catch (err) { return { ok: false, enabled: false, error: err.message }; }
 });
 ipcMain.handle('background:set', async (_e, on) => {
-  try { const enabled = await store.setRunInBackground(on); await applyBackgroundMode(); return { ok: true, enabled }; }
+  try {
+    const wanted = await store.setRunInBackground(on);
+    // Pass the value we just wrote rather than making applyBackgroundMode read it
+    // back, and report what actually happened: if the tray failed to appear,
+    // promising the user a tray icon would be a lie they discover the hard way.
+    const applied = await applyBackgroundMode({ background: wanted });
+    return { ok: true, enabled: applied.background, trayOk: applied.trayOk, wanted };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('startwithwindows:get', async () => {
+  try { return { ok: true, enabled: await store.getStartWithWindows() }; }
+  catch (err) { return { ok: false, enabled: false, error: err.message }; }
+});
+ipcMain.handle('startwithwindows:set', async (_e, on) => {
+  try {
+    const enabled = await store.setStartWithWindows(on);
+    await applyBackgroundMode({ startup: enabled });
+    return { ok: true, enabled };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('hwaccel:get', async () => {
+  try { return { ok: true, enabled: await store.getHardwareAcceleration() }; }
+  catch (err) { return { ok: false, enabled: true, error: err.message }; }
+});
+ipcMain.handle('hwaccel:set', async (_e, on) => {
+  try { return { ok: true, enabled: await store.setHardwareAcceleration(on) }; }
   catch (err) { return { ok: false, error: err.message }; }
+});
+
+// The renderer tells us the date it last saved content to, held in memory for
+// this process only and never written anywhere. Without it the daily reminder
+// nags on days already written, because in tray mode the journal is usually
+// locked by reminder time and a locked journal cannot be inspected.
+ipcMain.on('app:note-written', (_e, iso) => {
+  if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) lastWrittenDay = iso;
 });
 
 ipcMain.handle('guided:get', async () => {
@@ -1007,7 +1209,9 @@ ipcMain.handle('update:install', async () => {
   if (!autoUpdater) return { ok: false };
   allowClose = true; // the user chose to install; don't re-prompt the close guard
   setImmediate(() => {
-    try { autoUpdater.quitAndInstall(); } catch { /* nothing we can do */ }
+    // If the install cannot start, the close guard must come back. Leaving
+    // allowClose set would let the next close discard unsaved words in silence.
+    try { autoUpdater.quitAndInstall(); } catch { allowClose = false; }
   });
   return { ok: true };
 });

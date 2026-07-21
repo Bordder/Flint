@@ -357,6 +357,51 @@ async function main() {
     assert.strictEqual(await store.setRunInBackground(false), false);
   });
 
+  // The upgrade risk in splitting the tray toggle: anyone already running in the
+  // background had a startup entry too. If the fallback breaks, they lose it in
+  // silence and their reminders stop after the next reboot.
+  await test('start-with-Windows falls back to the old combined setting, then splits cleanly', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-startup-'));
+    try {
+      store.init(tmpRoot);
+      assert.strictEqual(await store.getStartWithWindows(), false, 'a brand new install starts off');
+
+      // simulate an existing install upgrading: only the old key is present
+      await store.setRunInBackground(true);
+      assert.strictEqual(await store.getStartWithWindows(), true, 'existing tray users keep starting with Windows');
+
+      // once answered explicitly, the new key wins and the two are independent
+      assert.strictEqual(await store.setStartWithWindows(false), false);
+      assert.strictEqual(await store.getStartWithWindows(), false, 'an explicit no survives runInBackground being on');
+      assert.strictEqual(await store.getRunInBackground(), true, 'the tray setting is untouched by the split');
+    } finally {
+      store.init(root); // always switch back so later tests use the main root
+    }
+  });
+
+  await test('tray question and notice are one-shot flags, off by default', async () => {
+    assert.strictEqual(await store.getTrayAsked(), false);
+    assert.strictEqual(await store.setTrayAsked(true), true);
+    assert.strictEqual(await store.getTrayAsked(), true);
+    assert.strictEqual(await store.getTrayNoticeShown(), false);
+    assert.strictEqual(await store.setTrayNoticeShown(true), true);
+  });
+
+  await test('hardware acceleration defaults on and is readable synchronously', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-hwaccel-'));
+    try {
+      store.init(tmpRoot);
+      assert.strictEqual(await store.getHardwareAcceleration(), true, 'on unless turned off');
+      assert.strictEqual(store.readStartupFlagsSync().hardwareAcceleration, true, 'sync read agrees before app ready');
+      assert.strictEqual(await store.setHardwareAcceleration(false), false);
+      assert.strictEqual(store.readStartupFlagsSync().hardwareAcceleration, false, 'sync read sees the saved value');
+      store.init(path.join(tmpRoot, 'nope'));
+      assert.strictEqual(store.readStartupFlagsSync().hardwareAcceleration, true, 'an unreadable settings file defaults to on');
+    } finally {
+      store.init(root); // always switch back so later tests use the main root
+    }
+  });
+
   await test('autosave interval defaults to 30s, persists, and clamps junk', async () => {
     assert.strictEqual(await store.getAutosaveSeconds(), 30, 'defaults to 30 seconds');
     assert.strictEqual(await store.setAutosaveSeconds(5), 5);

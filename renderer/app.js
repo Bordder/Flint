@@ -691,6 +691,29 @@ function useNudgePrompt(text) {
 /* welcome-back / fresh-start greeting */
 
 let greetingShown = false;
+let hiddenAt = 0;          // when the window went to the tray. Memory only, never saved.
+let suppressAwayOnce = false; // the gate already said it; do not say it twice
+let trayReturnPending = false; // unlocking after a tray return should land on today
+
+// Deliberately vague, and it gets vaguer with time rather than more precise.
+// An exact day count turns this into a score against a target Flint never set,
+// and someone coming back after a year needs the least arithmetic, not the most.
+// This is a statement about where the window was, never about the person: it
+// says "Flint has been in the tray", never "you have been away". If you are
+// editing this copy, that distinction is the whole reason the line is allowed
+// to exist. Never mention the streak here, and never build a notification on it.
+const AWAY_MIN_MS = 8 * 60 * 60 * 1000;
+function awayPhrase(ms) {
+  const h = ms / 3600000, d = h / 24;
+  if (h < 8) return '';
+  if (h < 36) return 'since yesterday';
+  if (d < 7) return 'for a few days';
+  if (d < 14) return 'for about a week';
+  if (d < 28) return 'for a couple of weeks';
+  if (d < 56) return 'for about a month';
+  if (d < 180) return 'for a few months';
+  return 'for a while';
+}
 
 // A single, soft, dismissible line: warm if it has been a while, or a clean-page
 // note on a new week. Never counts what was missed, never fires if today is
@@ -702,9 +725,20 @@ function maybeShowGreeting() {
   if (entryHasAnyContent(data.entries[today])) return;
   const written = Object.keys(data.entries).filter((d) => d < today && entryHasAnyContent(data.entries[d])).sort();
   if (!written.length) return;
+
+  // How long the window sat in the tray, if it did. Suppressed during the
+  // starter week, when someone is still finding their feet and does not need to
+  // hear how long anything has been.
+  const awayMs = hiddenAt ? Date.now() - hiddenAt : 0;
+  hiddenAt = 0; // read once: a second show without a hide in between says nothing
+  const away = (suppressAwayOnce || inStarterWeek()) ? '' : awayPhrase(awayMs);
+  suppressAwayOnce = false;
+
   const last = written[written.length - 1];
   let msg = '';
-  if (daysBetween(last, today) >= 4) {
+  if (away) {
+    msg = `Welcome back. Flint has been in the tray ${away}. Today's page is ready whenever you are.`;
+  } else if (daysBetween(last, today) >= 4) {
     msg = 'Welcome back. It has been a little while, and that is completely fine. Your page is here whenever you are.';
   } else if (mondayOf(last) !== mondayOf(today)) {
     msg = 'A new week, and a clean page whenever you want it.';
@@ -713,10 +747,23 @@ function maybeShowGreeting() {
   greetingShown = true;
   box.textContent = '';
   const p = document.createElement('p'); p.className = 'greeting-text'; p.textContent = msg;
+  if (away && awayMs) {
+    // The exact moment lives here and nowhere else, for anyone who wants it.
+    const when = new Date(Date.now() - awayMs);
+    p.title = `Last open on ${when.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  }
+  const open = document.createElement('button');
+  open.type = 'button'; open.className = 'ghost small greeting-open'; open.textContent = 'Open today';
+  open.addEventListener('click', () => {
+    box.hidden = true; box.textContent = '';
+    selectDay(todayISO());
+    $('note').focus();
+    updateEmptyHelpers();
+  });
   const close = document.createElement('button'); close.type = 'button'; close.className = 'greeting-close';
   close.setAttribute('aria-label', 'Dismiss'); close.textContent = '×';
   close.addEventListener('click', () => { box.hidden = true; box.textContent = ''; updateEmptyHelpers(); });
-  box.append(p, close);
+  box.append(p, open, close);
   box.hidden = false;
   updateEmptyHelpers(); // the nudge stands down while the greeting is showing, and returns when it goes
 }
@@ -771,6 +818,10 @@ async function saveCurrent(opts = {}) {
       } else if (!quiet) {
         setStatus(hasContent ? 'Saved.' : 'This day has been removed.');
       }
+      // Tell main which day now has words in it, so the evening reminder does not
+      // nag about a day already written. In tray mode the journal is usually
+      // locked by then, and a locked journal cannot be checked. A date only.
+      if (hasContent && isToday && api.noteWritten) api.noteWritten(currentDate);
       if (res.backupWarning) showNotice(res.backupWarning);
       renderWriterHead(); renderCount(); renderCalendar(); renderTagSuggestions(); updateEmptyHelpers();
       return true;
@@ -826,6 +877,21 @@ async function flushAutosave() {
   if (!canAutosave() || !isDirty()) { renderIndicator('saved'); return; }
   await saveCurrent({ quiet: true, backup: false, allowDelete: false, silentError: true });
   renderIndicator(isDirty() ? 'dirty' : 'saved');
+}
+
+// Closing to the tray is the one close with no save prompt behind it, so it has
+// to save whatever the ordinary guard would hold back. An open panel or modal is
+// a good reason to defer a routine tick (someone is still here) and a bad reason
+// to let a window disappear with unsaved words in it. The error stays silent
+// because the window is already gone: a modal nobody can see would also wedge
+// canAutosave() for the rest of the session.
+async function flushForHide() {
+  autosaveDeadline = 0;
+  if (!appReady || loadFailed || deleting) return;
+  const gate = $('pin-gate'); if (gate && gate.hidden === false) return;
+  for (let i = 0; i < 20 && saving; i++) await new Promise((r) => setTimeout(r, 15));
+  if (saving || !isDirty()) return;
+  await saveCurrent({ quiet: true, backup: true, allowDelete: false, silentError: true });
 }
 
 // The top-bar autosave dot: filled when everything is saved, a hollow outline
@@ -1953,6 +2019,12 @@ async function lockAndGate() {
   if (res.ok && !res.locked) {
     data = res.data || { version: 1, entries: {} };
     if (res.warning) showNotice(res.warning);
+    // If the date rolled over while Flint sat locked in the tray, come back to
+    // today rather than to whatever page was open when it locked. Landing on a
+    // week-old day with autosave live is a real way to lose writing.
+    if (trayReturnPending && currentDate !== todayISO()) currentDate = todayISO();
+    trayReturnPending = false;
+    const away = $('pin-away'); if (away) { away.hidden = true; away.textContent = ''; }
     loadEditor(currentDate); renderCount(); renderCalendar(); renderWriterHead();
     $('note').focus();
   }
@@ -1964,22 +2036,79 @@ async function relock() {
   await lockAndGate();
 }
 
+// One place for this wording, because two paths set it: the Settings toggle and
+// the one-time question at close. Split copy is how the two quietly disagree.
+function setBackgroundStatus(on, trayOk) {
+  const st = $('background-status'); if (!st) return;
+  if (on && !trayOk) {
+    st.textContent = 'Flint could not add its icon near the clock, so it will fully close when you close the window.';
+    return;
+  }
+  st.textContent = on
+    ? 'Flint will tuck into the notification area when you close the window.'
+    : 'Flint will fully close when you close the window.';
+}
+
+// Coming back from the tray. The window may have been away long enough for the
+// date to roll over, and it may have locked itself while nobody could see it.
+async function handleWindowShown() {
+  const gate = $('pin-gate');
+  if (gate && gate.hidden === false) {
+    // The gate opened while the window was invisible, so openLockGate's focus
+    // call went nowhere and any error on it predates the whole absence.
+    const err = $('pin-error'); if (err) err.textContent = '';
+    const away = $('pin-away');
+    if (away) {
+      const phrase = hiddenAt ? awayPhrase(Date.now() - hiddenAt) : '';
+      away.textContent = phrase
+        ? `Flint has been locked in the tray ${phrase}.`
+        : 'Flint locked itself while it was in the tray.';
+      away.hidden = false;
+    }
+    hiddenAt = 0;
+    suppressAwayOnce = true; // the gate has said it; the greeting must not repeat it
+    trayReturnPending = true;
+    const input = $('pin-input'); if (input) input.focus();
+    return;
+  }
+  await rollToTodayIfStale();
+  greetingShown = false; // a return from the tray is a fresh arrival, not the same launch
+  maybeShowGreeting();
+}
+
+// Landing on a week-old page with autosave live is a real way to lose writing,
+// and "in the tray for about a week" beside last Tuesday's date is incoherent.
+async function rollToTodayIfStale() {
+  const today = todayISO();
+  if (currentDate === today) return;
+  if (!(await guardDirty('moving to today'))) return;
+  selectDay(today);
+}
+
 /* auto-lock on idle */
 
 let autoLockMinutes = 15;
 let autoLockTimer = null;
 let encryptedNow = false;
+let windowPinNow = false;   // the older window-only PIN, which also deserves a re-lock
+
+// Either kind of lock means there is a gate to come back to, so either must arm
+// the idle timer. Before this, someone with the legacy window PIN and no
+// encryption was asked once when Flint launched and never again. That was
+// already weak, and keeping Flint in the tray turns "once per launch" into
+// "once a week", with the journal open on screen the whole time in between.
+function hasLock() { return encryptedNow || windowPinNow; }
 
 function resetAutoLockTimer() {
   clearTimeout(autoLockTimer);
-  if (!encryptedNow || !autoLockMinutes || !appReady) return;
+  if (!hasLock() || !autoLockMinutes || !appReady) return;
   autoLockTimer = setTimeout(autoLockNow, autoLockMinutes * 60 * 1000);
 }
 
 // An automatic lock must never cost anyone their words: save first, and if that
 // save fails, stay unlocked rather than clear the page.
 async function autoLockNow() {
-  if (!encryptedNow || !appReady || $('pin-gate').hidden === false) return;
+  if (!hasLock() || !appReady || $('pin-gate').hidden === false) return;
   // Don't lock out from under an open dialog or settings panel: being in one is a
   // sign someone is still here. The timer resumes once it is closed.
   if (modalIsOpen() || openPanelEl) { resetAutoLockTimer(); return; }
@@ -2066,6 +2195,8 @@ function secField(labelText, id, opts = {}) {
 async function renderSecuritySettings(announce) {
   const status = await safeCall(api.securityStatus);
   const encrypted = status.ok && status.encrypted;
+  // Set before updateLockButton, which re-arms the idle timer off hasLock().
+  windowPinNow = Boolean(status.ok && status.windowPin && !encrypted);
   updateLockButton(encrypted);
   updatePrivacyEncryptionLine(encrypted);
   $('security-explain').textContent = encrypted
@@ -2074,7 +2205,9 @@ async function renderSecuritySettings(announce) {
   const holder = $('security-settings'); holder.textContent = '';
   holder.append(encrypted ? buildChangePinForm() : buildEnableForm());
   if (encrypted) holder.append(buildAutoLockControl(), buildDisableForm());
-  else if (status.ok && status.windowPin) holder.append(buildRemoveWindowPinForm());
+  // A window PIN now re-locks on idle too, so it needs the same control. Without
+  // it the timer would exist with no way to change or switch off.
+  else if (windowPinNow) holder.append(buildAutoLockControl(), buildRemoveWindowPinForm());
   $('security-status').textContent = announce || '';
 }
 
@@ -3034,6 +3167,45 @@ async function init() {
   });
   api.onSaveThenClose(async () => { const ok = await saveCurrent(); if (ok) api.closeNow(); });
 
+  // tray bridges
+  api.onFlushNow(() => { flushForHide(); });
+  // Locking Windows or sleeping the machine means the person has really gone.
+  api.onLockNow(() => {
+    if (!hasLock() || !appReady) return;
+    if ($('pin-gate').hidden === false) return; // already locked
+    lockAndGate();
+  });
+  api.onWindowHidden((payload) => {
+    // Only a hide into the tray counts as being away. Minimising is not.
+    if (payload && payload.toTray) hiddenAt = Date.now();
+  });
+  api.onWindowShown(() => { handleWindowShown(); });
+  api.onTrayOffer(async () => {
+    // Asked once in Flint's life, on a clean close. The safe answer is last, so
+    // Escape and the window X both land on "close fully": silence must never
+    // switch on a background process.
+    let body = 'Closing the window can either tuck Flint into the notification area, quietly, or close it completely.\n\nKept in the tray, Flint stays out of the way and reopens instantly. Either way nothing leaves this computer.\n\nYou can change this whenever you like, in Settings under System.';
+    const rem = await safeCall(api.getReminder);
+    if (rem.ok && rem.enabled) {
+      body += '\n\nIt also means your daily reminder can still reach you while the window is shut.';
+    }
+    const choice = await showModal({
+      title: 'Keep Flint in the tray?',
+      body,
+      buttons: [
+        { label: 'Keep Flint in the tray', value: 'tray' },
+        { label: 'Close it fully', value: 'full', kind: 'primary' }
+      ],
+      focusValue: 'full'
+    });
+    if (choice === 'tray') {
+      const bg = $('background-toggle');
+      if (bg) bg.checked = true; // the renderer reads this once at boot; keep it honest
+      setBackgroundStatus(true, true);
+    }
+    api.trayAnswer(choice === 'tray' ? 'tray' : 'full');
+  });
+
   let secStatus = await safeCall(api.securityStatus);
   const needGate = secStatus.ok && ((secStatus.encrypted && !secStatus.unlocked) || (!secStatus.encrypted && secStatus.windowPin));
   if (needGate) await openLockGate(secStatus);
@@ -3046,6 +3218,8 @@ async function init() {
       secStatus = await safeCall(api.securityStatus); // onboarding may have turned on encryption
     }
   }
+  // Set before updateLockButton, which arms the idle timer off hasLock().
+  windowPinNow = Boolean(secStatus.ok && secStatus.windowPin && !secStatus.encrypted);
   updateLockButton(secStatus.ok && secStatus.encrypted);
   updatePrivacyEncryptionLine(secStatus.ok && secStatus.encrypted);
 
@@ -3088,6 +3262,10 @@ async function init() {
   }
   const bgRes = await safeCall(api.getRunInBackground);
   if (bgRes.ok && $('background-toggle')) $('background-toggle').checked = bgRes.enabled;
+  const swRes = await safeCall(api.getStartWithWindows);
+  if (swRes.ok && $('startup-toggle')) $('startup-toggle').checked = swRes.enabled;
+  const hwRes = await safeCall(api.getHardwareAcceleration);
+  if (hwRes.ok && $('hwaccel-toggle')) $('hwaccel-toggle').checked = hwRes.enabled;
 
   // startedOn (stamped by finishOnboarding) drives the gentle starter-week hint.
   const startRes = await safeCall(api.getStartedOn);
@@ -3184,9 +3362,29 @@ async function init() {
   $('background-toggle').addEventListener('change', async () => {
     const on = $('background-toggle').checked;
     const res = await safeCall(api.setRunInBackground, on);
-    const st = $('background-status');
-    if (st) st.textContent = res.ok ? (on ? 'Flint will keep running in the tray and start with Windows.' : 'Flint will fully close when you close the window.') : 'That could not be changed.';
+    if (!res.ok) { const st = $('background-status'); if (st) st.textContent = 'That could not be changed.'; return; }
+    // Report what actually happened, not what was asked for. If the tray icon
+    // could not be created, promising one is a lie found out the hard way.
+    $('background-toggle').checked = res.enabled;
+    setBackgroundStatus(res.enabled, res.trayOk !== false);
   });
+  $('startup-toggle').addEventListener('change', async () => {
+    const on = $('startup-toggle').checked;
+    const res = await safeCall(api.setStartWithWindows, on);
+    const st = $('startup-status');
+    if (!st) return;
+    st.textContent = res.ok
+      ? (res.enabled ? 'Flint will open quietly in the notification area when you sign in.' : 'Flint will only open when you open it.')
+      : 'That could not be changed.';
+  });
+  $('hwaccel-toggle').addEventListener('change', async () => {
+    const on = $('hwaccel-toggle').checked;
+    const res = await safeCall(api.setHardwareAcceleration, on);
+    const st = $('hwaccel-status');
+    if (!st) return;
+    st.textContent = res.ok ? 'Saved. This takes effect the next time Flint opens.' : 'That could not be changed.';
+  });
+  $('goto-system').addEventListener('click', () => showSettingsCat('system'));
   $('backup-toggle').addEventListener('change', () => saveBackupCfg({ ...backupCfg, enabled: $('backup-toggle').checked }));
   $('backup-choose-btn').addEventListener('click', async () => {
     // Main picks and stores the folder itself; we only get back the result.

@@ -82,5 +82,20 @@ contextBridge.exposeInMainWorld('journal', {
   dirtyReply: (v) => ipcRenderer.send('app:dirty-reply', Boolean(v)),
 
   onQueryDirty: (cb) => ipcRenderer.on('app:query-dirty', () => cb()),
-  onSaveThenClose: (cb) => ipcRenderer.on('app:save-then-close', () => cb())
+  onSaveThenClose: (cb) => ipcRenderer.on('app:save-then-close', () => cb()),
+
+  // tray / background
+  getStartWithWindows: () => ipcRenderer.invoke('startwithwindows:get'),
+  setStartWithWindows: (on) => ipcRenderer.invoke('startwithwindows:set', on),
+  getHardwareAcceleration: () => ipcRenderer.invoke('hwaccel:get'),
+  setHardwareAcceleration: (on) => ipcRenderer.invoke('hwaccel:set', on),
+  onFlushNow: (cb) => ipcRenderer.on('app:flush-now', () => cb()),
+  onLockNow: (cb) => ipcRenderer.on('app:lock-now', () => cb()),
+  onTrayOffer: (cb) => ipcRenderer.on('app:tray-offer', () => cb()),
+  trayAnswer: (choice) => ipcRenderer.send('app:tray-answer', String(choice)),
+  onWindowHidden: (cb) => ipcRenderer.on('window:hidden', (_e, payload) => cb(payload || {})),
+  onWindowShown: (cb) => ipcRenderer.on('window:shown', () => cb()),
+  // Carries a date and nothing else, so the reminder can tell a written day from
+  // a locked one without anything about the entry leaving the renderer.
+  noteWritten: (iso) => ipcRenderer.send('app:note-written', String(iso || ''))
 });

@@ -98,9 +98,13 @@ file.
   today and counts the days you have kept going. You can mark days off (Settings →
   Reminders) so a planned gap steps over them instead of breaking the streak.
 - **Reminders that can reach you when Flint is closed.** The optional daily nudge
-  normally appears only while Flint is open; turn on "keep Flint in the tray" in
-  Settings → Reminders and it starts with Windows and sits quietly in the tray, so
-  the nudge still arrives when the window is shut.
+  normally appears only while Flint is open. Turn on "keep Flint running when I
+  close the window" in Settings → System and closing the window tucks Flint into
+  the notification area instead of quitting, so the nudge still arrives. Flint
+  asks you once, the first time you close it, and never again either way.
+- **Starting with Windows is a separate choice.** Keeping Flint in the tray no
+  longer adds a startup entry on its own. Settings → System has its own switch for
+  that, so you can have one without the other.
 - **A nudge when the page is blank.** Open a day you have not written on and Flint
   can offer a gentle prompt to start from. Ask for another, use it, or wave it away.
   The prompts are always optional and never time-limited, and on a day you mark Bad

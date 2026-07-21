@@ -66,6 +66,7 @@ function init(rootDir) {
     root: rootDir, dataDir: path.join(rootDir, 'data'), dataFile: path.join(rootDir, 'data', 'entries.json'), backupsDir: path.join(rootDir, 'data', 'backups'), mediaDir: path.join(rootDir, 'data', 'media'), settingsFile: path.join(rootDir, 'data', 'settings.json')
   };
   fs.mkdirSync(P.backupsDir, { recursive: true });
+  invalidateSettingsCache(); // a new root means the cached settings belong to the old one
   return { ...P };
 }
 
@@ -648,6 +649,59 @@ async function setRunInBackground(on) {
   s.runInBackground = Boolean(on);
   await saveSettings(s);
   return s.runInBackground;
+}
+
+// Starting with Windows used to be welded to the tray toggle, so turning on
+// "keep running" silently added a startup entry the user never asked for. They
+// are separate settings now. The fallback is not optional: without it, anyone
+// upgrading with runInBackground on would quietly lose their startup entry and
+// their reminders would stop arriving after the next reboot, with no error.
+async function getStartWithWindows() {
+  const s = await loadSettings();
+  return s.startWithWindows === undefined ? s.runInBackground === true : s.startWithWindows === true;
+}
+async function setStartWithWindows(on) {
+  const s = await loadSettings();
+  s.startWithWindows = Boolean(on);
+  await saveSettings(s);
+  return s.startWithWindows;
+}
+
+// The one-time "keep Flint in the tray?" question, and the one-time "it is
+// still here" notification. Both are asked once in the app's life; a dismissed
+// question counts as an answer, so these are set on every exit path.
+async function getTrayAsked() {
+  const s = await loadSettings();
+  return s.trayAsked === true;
+}
+async function setTrayAsked(on) {
+  const s = await loadSettings();
+  s.trayAsked = Boolean(on);
+  await saveSettings(s);
+  return s.trayAsked;
+}
+async function getTrayNoticeShown() {
+  const s = await loadSettings();
+  return s.trayNoticeShown === true;
+}
+async function setTrayNoticeShown(on) {
+  const s = await loadSettings();
+  s.trayNoticeShown = Boolean(on);
+  await saveSettings(s);
+  return s.trayNoticeShown;
+}
+
+// On by default. Read synchronously at startup (see readStartupFlagsSync),
+// because Electron only honours disableHardwareAcceleration before app ready.
+async function getHardwareAcceleration() {
+  const s = await loadSettings();
+  return s.hardwareAcceleration !== false;
+}
+async function setHardwareAcceleration(on) {
+  const s = await loadSettings();
+  s.hardwareAcceleration = Boolean(on);
+  await saveSettings(s);
+  return s.hardwareAcceleration;
 }
 
 // An optional local nudge to write, off by default. The time is 24 hour HH:MM.
@@ -1316,18 +1370,61 @@ function buildActivityReportHtml(data, opts = {}) {
 // Turning on encryption (below) supersedes it and clears it. It is kept so
 // existing installs that set a window PIN keep working.
 
+// Settings are read on a one-minute timer for the whole time Flint sits in the
+// tray, so an uncached read is roughly 1,440 full reads and JSON parses a day
+// for a value that almost never changes.
+//
+// The cache is validated by stat rather than simply trusted. Assuming this
+// process is the only writer would be wrong in a case that matters: deleting
+// settings.json by hand is the documented way to recover from a forgotten
+// window PIN. A stat is far cheaper than a read plus parse and it keeps that
+// path working, so correctness costs almost nothing here.
+let settingsCache = null;
+let settingsStamp = '';
+function invalidateSettingsCache() { settingsCache = null; settingsStamp = ''; }
+
 async function loadSettings() {
+  let stamp = '';
+  try {
+    const st = await fsp.stat(P.settingsFile);
+    stamp = `${st.mtimeMs}:${st.size}`;
+  } catch {
+    stamp = ''; // no file: fall through and cache the empty result
+  }
+  if (settingsCache && stamp && stamp === settingsStamp) return settingsCache;
   try {
     const raw = await fsp.readFile(P.settingsFile, 'utf8');
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    settingsCache = parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
-    return {};
+    settingsCache = {};
   }
+  settingsStamp = stamp;
+  return settingsCache;
 }
 
 async function saveSettings(settings) {
   await writeFileAtomic(P.settingsFile, JSON.stringify(settings, null, 2));
+  settingsCache = settings && typeof settings === 'object' ? settings : {};
+  try {
+    const st = await fsp.stat(P.settingsFile);
+    settingsStamp = `${st.mtimeMs}:${st.size}`;
+  } catch {
+    settingsStamp = ''; // unknown: the next read revalidates rather than trusting
+  }
+}
+
+// Read before app.whenReady, so it cannot use the async API above. Only for
+// flags that must be known before the first window exists. Defaults on any
+// failure, because a settings problem must never stop Flint opening.
+function readStartupFlagsSync() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(P.settingsFile, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return { hardwareAcceleration: true };
+    return { hardwareAcceleration: parsed.hardwareAcceleration !== false };
+  } catch {
+    return { hardwareAcceleration: true };
+  }
 }
 
 function hashPin(pin, salt) {
@@ -1762,6 +1859,7 @@ function resetAll() {
     clearSessionDk();
     sessionVault = null;
     encryptedOnDisk = false;
+    invalidateSettingsCache(); // settings.json is about to be deleted underneath the cache
     try {
       await fsp.rm(P.dataDir, { recursive: true, force: true });
     } catch (err) {
@@ -1773,7 +1871,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getStartWithWindows, setStartWithWindows, getTrayAsked, setTrayAsked, getTrayNoticeShown, setTrayNoticeShown, getHardwareAcceleration, setHardwareAcceleration, readStartupFlagsSync, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

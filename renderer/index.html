@@ -20,6 +20,7 @@
         <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
       </div>
       <h1 id="pin-title">Flint</h1>
+      <p class="soft" id="pin-away" hidden></p>
       <p class="soft" id="pin-sub">Enter your PIN to unlock your journal.</p>
       <form id="pin-form">
         <label class="visually-hidden" for="pin-input">PIN</label>
@@ -275,6 +276,7 @@
         <button type="button" class="settings-nav-item" data-cat="writing">Writing</button>
         <button type="button" class="settings-nav-item" data-cat="security">Lock &amp; encryption</button>
         <button type="button" class="settings-nav-item" data-cat="backups">Backups &amp; export</button>
+        <button type="button" class="settings-nav-item" data-cat="system">System</button>
         <button type="button" class="settings-nav-item" data-cat="data">About &amp; data</button>
       </nav>
 
@@ -315,9 +317,7 @@
               <input type="time" id="reminder-time" value="20:00">
             </div>
             <p id="reminder-status" class="status" role="status" aria-live="polite"></p>
-            <p class="soft small">Reminders can only appear while Flint is open. To be nudged when it is closed, let it keep running quietly in the background:</p>
-            <label class="toggle-row"><input type="checkbox" id="background-toggle"><span>Keep Flint in the tray so reminders can reach me (starts with Windows)</span></label>
-            <p id="background-status" class="status" role="status" aria-live="polite"></p>
+            <p class="soft small">Reminders can only appear while Flint is open. To be nudged when it is closed, let it keep running quietly in the background: <button type="button" class="linklike" id="goto-system">Keep Flint running</button></p>
           </section>
 
           <section class="settings-block">
@@ -434,15 +434,20 @@
           </section>
         </div>
 
-        <div class="settings-cat" data-cat="data" hidden>
+        <div class="settings-cat" data-cat="system" hidden>
           <section class="settings-block">
-            <h3>Updates</h3>
-            <p class="soft" id="version-line">Flint version</p>
-            <label class="toggle-row"><input type="checkbox" id="update-toggle" checked><span>Check for a new version when Flint opens</span></label>
-            <div class="btn-row settings-actions"><button id="update-check-btn" type="button">Check now</button></div>
-            <p id="update-setting-status" class="status" role="status" aria-live="polite"></p>
-            <div id="update-progress" class="update-progress" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" hidden><div id="update-progress-fill" class="update-progress-fill"></div></div>
-            <div id="update-actions" class="btn-row settings-actions" hidden></div>
+            <h3>When you close the window</h3>
+            <p class="soft">Flint can tuck itself into the notification area near the clock instead of closing, so it reopens instantly and your daily reminder can still reach you.</p>
+            <label class="toggle-row"><input type="checkbox" id="background-toggle"><span>Keep Flint running when I close the window</span></label>
+            <p id="background-status" class="status" role="status" aria-live="polite"></p>
+            <p class="soft small">With this on, the window's close button tucks Flint away near the clock. To quit fully, right-click that icon and choose Quit Flint.</p>
+          </section>
+
+          <section class="settings-block">
+            <h3>Starting with Windows</h3>
+            <p class="soft">Separate from the setting above, so keeping Flint in the tray never adds a startup entry you did not ask for.</p>
+            <label class="toggle-row"><input type="checkbox" id="startup-toggle"><span>Start Flint when I sign in to Windows</span></label>
+            <p id="startup-status" class="status" role="status" aria-live="polite"></p>
           </section>
 
           <section class="settings-block">
@@ -453,6 +458,25 @@
               <li><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> add a quick note to today</li>
               <li><kbd>Esc</kbd> leave focus mode, or close a panel</li>
             </ul>
+          </section>
+
+          <section class="settings-block">
+            <h3>Drawing the window</h3>
+            <p class="soft">If text looks smeared or the window flickers, turning this off can help. Most people should leave it on. It takes effect the next time Flint opens.</p>
+            <label class="toggle-row"><input type="checkbox" id="hwaccel-toggle" checked><span>Use your graphics card to draw the window</span></label>
+            <p id="hwaccel-status" class="status" role="status" aria-live="polite"></p>
+          </section>
+        </div>
+
+        <div class="settings-cat" data-cat="data" hidden>
+          <section class="settings-block">
+            <h3>Updates</h3>
+            <p class="soft" id="version-line">Flint version</p>
+            <label class="toggle-row"><input type="checkbox" id="update-toggle" checked><span>Check for a new version when Flint opens</span></label>
+            <div class="btn-row settings-actions"><button id="update-check-btn" type="button">Check now</button></div>
+            <p id="update-setting-status" class="status" role="status" aria-live="polite"></p>
+            <div id="update-progress" class="update-progress" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" hidden><div id="update-progress-fill" class="update-progress-fill"></div></div>
+            <div id="update-actions" class="btn-row settings-actions" hidden></div>
           </section>
 
           <section class="settings-block">

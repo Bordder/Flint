@@ -33,6 +33,12 @@
      paper-3 in every theme. Declared once: the var()s below re-resolve against
      whichever palette is active. Measured, not guessed. */
   --danger-ink:   color-mix(in oklab, var(--danger) 38%, var(--ink));
+  /* Same problem, same cure. --good and --accent are picked to carry meaning at
+     a glance, not to be read as sentences, and both drop under 4.5:1 as text in
+     the paler light palettes. These keep the hue and clear AA on every surface
+     in every theme. Status lines and links use them; icons and fills do not. */
+  --good-ink:     color-mix(in oklab, var(--good) 18%, var(--ink));
+  --link-ink:     color-mix(in oklab, var(--accent) 45%, var(--ink));
   --mark:         oklch(90% 0.09 90);      /* search highlight */
 
   --notice-bg:    oklch(96% 0.04 92);
@@ -289,7 +295,7 @@ button.danger:hover { background: var(--danger-soft); }
 
 button.linklike {
   background: none; border: none; padding: 0.15rem 0;
-  color: var(--accent); text-decoration: underline;
+  color: var(--link-ink); text-decoration: underline;
   text-underline-offset: 3px; border-radius: 4px;
 }
 
@@ -429,8 +435,8 @@ textarea:focus-visible { background: var(--paper-2); }
 .note-preview .task-text.done { color: var(--ink-3); text-decoration: line-through; }
 
 /* status messages */
-.status { color: var(--good); font-size: var(--text-sm); }
-.status.error { color: var(--danger); }
+.status { color: var(--good-ink); font-size: var(--text-sm); }
+.status.error { color: var(--danger-ink); }
 #status { min-width: 0; }
 
 /* notices + update banner */
