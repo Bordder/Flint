@@ -1201,6 +1201,9 @@ function buildExportHtml(data, opts = {}) {
   // browser window to make the PDF, so it gets a CSP of its own: no scripts, no
   // network, nothing but the text and the styles below.
   parts.push('<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8">');
+  // See the note in buildActivityReportHtml: without this, the PDF /Title
+  // becomes the data: URL, which is the entire journal.
+  parts.push('<title>Flint journal</title>');
   parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">');
   parts.push('<style>');
   parts.push(`
@@ -1269,7 +1272,13 @@ function buildExportHtml(data, opts = {}) {
 // e.g. to keep for your own reference or to show someone helping you. Uses only
 // what you have written; deliberately plain wording, no labels beyond that.
 
+// The activities summary is the export the app offers "to show someone who is
+// helping you", so its contents must match what its own header says it covers.
+// It used to embed the whole free-text note and every guided-prompt answer, so
+// a user handing it to an assessor handed over the entire diary without knowing.
+// The writing is opt-in now; "Save journal" is the export for sharing everything.
 function buildActivityReport(data, opts = {}) {
+  const includeWriting = opts.includeWriting === true;
   const questions = opts.questions || DEFAULT_QUESTIONS;
   const titles = opts.knownTitles || {};
   const now = opts.now || new Date();
@@ -1284,6 +1293,12 @@ function buildActivityReport(data, opts = {}) {
   lines.push('');
   lines.push('A day-by-day record of everyday activities and how they varied.');
   lines.push('');
+  if (!includeWriting) {
+    lines.push('This summary lists activities, how each day went and any tags or');
+    lines.push('feelings chosen. It does NOT include the diary writing itself. To');
+    lines.push('share everything, use "Save journal" instead.');
+    lines.push('');
+  }
   lines.push('The everyday activities this record covers:');
   REPORT_ACTIVITIES.forEach((a, i) => lines.push(`  ${i + 1}. ${a}`));
 
@@ -1307,11 +1322,13 @@ function buildActivityReport(data, opts = {}) {
     const photos = photosLine(entry);
     if (photos) lines.push(`Photos: ${photos} (kept in your data folder)`);
     const note = entryNote(entry);
-    if (note) { lines.push(''); lines.push(note); }
-    for (const sec of orderedAnswers(entry, questions, titles)) {
-      lines.push('');
-      lines.push(`  ${sec.title}`);
-      for (const ln of sec.text.split('\n')) lines.push(`    ${ln}`);
+    if (includeWriting) {
+      if (note) { lines.push(''); lines.push(note); }
+      for (const sec of orderedAnswers(entry, questions, titles)) {
+        lines.push('');
+        lines.push(`  ${sec.title}`);
+        for (const ln of sec.text.split('\n')) lines.push(`    ${ln}`);
+      }
     }
   }
 
@@ -1321,7 +1338,10 @@ function buildActivityReport(data, opts = {}) {
 
 // The same summary as a self-contained printable HTML document (used for the
 // PDF). No external fonts, styles or images, so it prints the same offline.
+// Same scope rule as buildActivityReport: activities and markers only, unless
+// the caller explicitly asks for the writing too.
 function buildActivityReportHtml(data, opts = {}) {
+  const includeWriting = opts.includeWriting === true;
   const questions = opts.questions || DEFAULT_QUESTIONS;
   const titles = opts.knownTitles || {};
   const now = opts.now || new Date();
@@ -1330,6 +1350,13 @@ function buildActivityReportHtml(data, opts = {}) {
 
   const parts = [];
   parts.push('<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8">');
+  // A real title, or Chromium falls back to the document's URL when it writes
+  // the PDF /Title. These documents are rendered from a data: URL, so that
+  // fallback puts thousands of characters of the diary into the file metadata,
+  // where it is invisible on screen but readable in File > Properties, exiftool
+  // and the Windows search index. printToPDF has no title option: this element
+  // is the fix.
+  parts.push('<title>Daily activities summary</title>');
   parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">');
   parts.push('<style>');
   parts.push(`
@@ -1379,13 +1406,15 @@ function buildActivityReportHtml(data, opts = {}) {
     const photos = photosLine(entry);
     if (photos) badges.push(`<span class="badge">${escapeHtml(photos)}</span>`);
     if (badges.length) parts.push(`<div class="day-meta">${badges.join('')}</div>`);
-    const note = entryNote(entry);
-    if (note) parts.push(`<p class="note">${escapeHtml(note)}</p>`);
-    for (const sec of orderedAnswers(entry, questions, titles)) {
-      parts.push('<div class="prompt">');
-      parts.push(`<p class="prompt-title">${escapeHtml(sec.title)}</p>`);
-      parts.push(`<p class="prompt-answer">${escapeHtml(sec.text)}</p>`);
-      parts.push('</div>');
+    if (includeWriting) {
+      const note = entryNote(entry);
+      if (note) parts.push(`<p class="note">${escapeHtml(note)}</p>`);
+      for (const sec of orderedAnswers(entry, questions, titles)) {
+        parts.push('<div class="prompt">');
+        parts.push(`<p class="prompt-title">${escapeHtml(sec.title)}</p>`);
+        parts.push(`<p class="prompt-answer">${escapeHtml(sec.text)}</p>`);
+        parts.push('</div>');
+      }
     }
     parts.push('</section>');
     if (i < dates.length - 1) parts.push('<hr class="day-rule">');
@@ -1815,25 +1844,61 @@ function disableEncryption(pin) {
   });
 }
 
-// Re-encrypt every attachment from one data key to another.
-async function rekeyMedia(oldDk, newDk) {
+// Re-encrypt every attachment from one data key to another, in two phases.
+//
+// This used to rewrite each photo in place. If photo 12 of 40 failed (open in
+// another program, an antivirus scan, a sync client), the caller returned early
+// and threw the new key away, leaving photos 1 to 11 sealed under a key that
+// then existed nowhere. They were unreadable forever, the message said "Nothing
+// was changed", and every retry hit the same wall, because those files no longer
+// decrypted with the old key either.
+//
+// Now phase one only writes <id>.rekey sidecars, so a failure anywhere leaves
+// every original untouched and "nothing was changed" is true. Phase two renames
+// the sidecars in, and runs only after the vault holding the new key is on disk.
+async function rekeyMediaPrepare(oldDk, newDk) {
+  const prepared = [];
   const failed = [];
   let names;
-  try { names = await fsp.readdir(P.mediaDir); } catch { return failed; }
+  try { names = await fsp.readdir(P.mediaDir); } catch { return { prepared, failed }; }
   for (const name of names.filter((n) => n.endsWith('.tmp'))) {
     await fsp.unlink(path.join(P.mediaDir, name)).catch(() => {});
   }
   for (const name of names.filter(isSafeMediaId)) {
+    const file = mediaPath(name);
+    const sidecar = `${file}.rekey`;
     try {
-      const file = mediaPath(name);
       const blob = await fsp.readFile(file);
       const raw = isEncryptedBlob(blob) ? vaultCrypto.decryptBuffer(oldDk, blob.subarray(MEDIA_MAGIC.length)) : blob;
-      await writeFileAtomicRaw(file, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(newDk, raw)]));
+      await writeFileAtomicRaw(sidecar, Buffer.concat([MEDIA_MAGIC, vaultCrypto.encryptBuffer(newDk, raw)]));
+      prepared.push({ file, sidecar });
     } catch {
       failed.push(name);
     }
   }
-  return failed;
+  return { prepared, failed };
+}
+
+// Give up cleanly: the originals were never touched, so removing the sidecars
+// returns the folder to exactly the state we found it in.
+async function rekeyMediaAbort(prepared) {
+  for (const p of prepared) await fsp.unlink(p.sidecar).catch(() => {});
+}
+
+// Move the new-key copies into place. A rename that fails here leaves its
+// sidecar behind on purpose: the sidecar holds the only readable copy under the
+// new key, so deleting it would be the very loss this rewrite exists to prevent.
+async function rekeyMediaCommit(prepared) {
+  const stuck = [];
+  for (const p of prepared) {
+    let done = false;
+    for (let i = 0; i < 3 && !done; i++) {
+      try { await fsp.rename(p.sidecar, p.file); done = true; }
+      catch { await new Promise((r) => setTimeout(r, 40)); }
+    }
+    if (!done) stuck.push(p.file);
+  }
+  return stuck;
 }
 
 // Move the rolling backups onto the new key as well. A backup that still holds
@@ -1867,19 +1932,25 @@ async function rekeyBackups(oldDk, newDk, newVault) {
 // open nothing that still exists.
 async function rotateToNewKey(data, oldDk, newPin) {
   const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, newPin);
-  const failed = await rekeyMedia(oldDk, dk);
+  const { prepared, failed } = await rekeyMediaPrepare(oldDk, dk);
   if (failed.length) {
+    // Every original is still on the old key, so this really is a clean no-op.
+    await rekeyMediaAbort(prepared);
     return {
       ok: false,
-      error: `Nothing was changed, because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be re-locked just now (they may be open in another program). Please try again.`
+      error: `Nothing was changed, because ${failed.length} ${failed.length === 1 ? 'photo' : 'photos'} could not be re-locked just now (they may be open in another program). Your PIN is unchanged and every photo is exactly as it was. Please try again.`
     };
   }
+  // Commit the vault FIRST: it holds the wraps for the new key, so from here the
+  // new-key photos are readable. Doing it the other way round is what stranded
+  // them.
   await writeMainAndBackup(JSON.stringify(vault, null, 2));
+  const stuck = await rekeyMediaCommit(prepared);
   const removed = await rekeyBackups(oldDk, dk, vault);
   setSessionDk(dk);
   sessionVault = vault;
   encryptedOnDisk = encryptedEverThisSession = true;
-  return { ok: true, recoveryCode, removedBackups: removed };
+  return { ok: true, recoveryCode, removedBackups: removed, stuckPhotos: stuck.length };
 }
 
 // Change the PIN. This rotates the data key, so a NEW recovery code is issued.

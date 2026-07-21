@@ -209,12 +209,63 @@ async function main() {
     assert.match(rep, /Overall: Mixed day/);
     assert.match(rep, /Compared with usual: Easier than usual/);
     assert.match(rep, /Activities: Rest/);
-    assert.match(rep, /A quieter day\./);
     assert.doesNotMatch(rep, /\b(PIP|DWP|benefit|assessment|disability|medical)\b/i, 'the report never labels itself');
     const html = store.buildActivityReportHtml(data, { questions: store.DEFAULT_QUESTIONS });
     assert.match(html, /Daily activities summary/);
     assert.match(html, /Preparing food/);
     assert.doesNotMatch(html, /\b(PIP|DWP|benefit|assessment|disability|medical)\b/i);
+  });
+
+  // H3. This export is the one offered "to show someone who is helping you", and
+  // it used to carry the entire diary inside it. Its contents must match its own
+  // header, or a user hands an assessor far more than they meant to.
+  await test('H3: the activities summary carries no diary writing unless asked', async () => {
+    const data = store.emptyData();
+    data.entries['2026-05-02'] = {
+      note: 'PRIVATE-DIARY-CANARY, the sort of thing nobody means to hand over.',
+      food: 'ANSWER-CANARY in a guided prompt.',
+      __day: 'mixed', __activities: ['Rest'], __tags: ['migraine'], updatedAt: 'x'
+    };
+    const qs = [{ key: 'food', title: 'Food and cooking', hint: '' }];
+
+    const rep = store.buildActivityReport(data, { questions: qs });
+    assert.match(rep, /Activities: Rest/, 'the activities themselves are still reported');
+    assert.match(rep, /Tags: migraine/, 'and the tags');
+    assert.doesNotMatch(rep, /PRIVATE-DIARY-CANARY/, 'the free-text note is not in the summary');
+    assert.doesNotMatch(rep, /ANSWER-CANARY/, 'guided prompt answers are not either');
+    assert.match(rep, /does NOT include the diary writing/i, 'and it says so plainly');
+
+    const html = store.buildActivityReportHtml(data, { questions: qs });
+    assert.doesNotMatch(html, /PRIVATE-DIARY-CANARY/, 'same for the PDF source');
+    assert.doesNotMatch(html, /ANSWER-CANARY/);
+
+    // opt in and the writing comes back, so nothing is lost, only defaulted
+    const full = store.buildActivityReport(data, { questions: qs, includeWriting: true });
+    assert.match(full, /PRIVATE-DIARY-CANARY/, 'still available when explicitly requested');
+    assert.match(full, /ANSWER-CANARY/);
+
+    // the full journal export is unaffected: it is meant to contain everything
+    const journal = store.buildExportText(data, { questions: qs });
+    assert.match(journal, /PRIVATE-DIARY-CANARY/, 'Save journal still exports the writing');
+  });
+
+  // H4. Without a <title>, Chromium falls back to the document URL when writing
+  // the PDF /Title, and these are rendered from a data: URL, so the metadata
+  // held thousands of characters of diary text: invisible on screen, readable
+  // in File > Properties and the Windows search index.
+  await test('H4: PDF source documents carry a real title, so no text leaks to metadata', async () => {
+    const data = store.emptyData();
+    data.entries['2026-05-02'] = { note: 'TITLE-LEAK-CANARY', updatedAt: 'x' };
+    for (const html of [
+      store.buildExportHtml(data, { questions: store.DEFAULT_QUESTIONS }),
+      store.buildActivityReportHtml(data, { questions: store.DEFAULT_QUESTIONS, includeWriting: true })
+    ]) {
+      const m = html.match(/<title>([^<]*)<\/title>/);
+      assert.ok(m, 'the document declares a title');
+      assert.ok(m[1].trim().length > 0, 'and it is not empty');
+      assert.doesNotMatch(m[1], /TITLE-LEAK-CANARY/, 'the title carries no entry text');
+      assert.ok(m[1].length < 80, `the title is a label, not a document (${m[1].length} chars)`);
+    }
   });
 
   await test('a day with only a marker or only tags still exports', async () => {
@@ -857,6 +908,57 @@ async function main() {
         'a plaintext write is refused rather than silently undoing encryption'
       );
       assert.ok(!fs.existsSync(PH.dataFile), 'nothing was written in the clear');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  // H5. A PIN change rewrote every photo in place under the new key, then threw
+  // that key away if any single one failed. Everything already rewritten became
+  // unreadable forever, while the message said "Nothing was changed".
+  await test('H5: a PIN change that fails partway leaves every photo readable', async () => {
+    const rootR = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h5-'));
+    const PR = store.init(rootR);
+    try {
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('firstpin1')).ok, 'encrypted');
+
+      // three photos, all readable under the current PIN
+      const ids = [];
+      for (let i = 0; i < 3; i++) {
+        const src = path.join(rootR, `shot${i}.png`);
+        fs.writeFileSync(src, Buffer.from('89504e470d0a1a0a' + String(i).repeat(2) + 'cd'.repeat(64), 'hex'));
+        const add = await store.addMedia(src);
+        assert.ok(add.ok, `photo stored (${add.error || ''})`);
+        ids.push(add.id);
+      }
+
+      // make the LAST photo unreadable so the rekey fails partway through,
+      // exactly like a file held open by another program
+      const victim = path.join(PR.mediaDir, ids[2]);
+      fs.writeFileSync(victim, Buffer.concat([Buffer.from('FLINTMED1'), Buffer.from('not decryptable under any key')]));
+
+      const before = ids.slice(0, 2).map((id) => fs.readFileSync(path.join(PR.mediaDir, id)));
+      const res = await store.changeEncryptionPin('firstpin1', 'secondpin2');
+      assert.strictEqual(res.ok, false, 'the PIN change is refused');
+      assert.match(res.error, /nothing was changed|exactly as it was/i, 'and says so truthfully');
+
+      // the promise the message makes must actually hold
+      ids.slice(0, 2).forEach((id, i) => {
+        const now = fs.readFileSync(path.join(PR.mediaDir, id));
+        assert.ok(now.equals(before[i]), `photo ${i} was not rewritten under a discarded key`);
+      });
+      const sidecars = fs.readdirSync(PR.mediaDir).filter((n) => n.endsWith('.rekey'));
+      assert.strictEqual(sidecars.length, 0, 'no half-finished copies are left behind');
+
+      // and the original PIN still opens everything
+      store.lock();
+      assert.strictEqual((await store.unlock('firstpin1')).ok, true, 'the old PIN still works');
+      for (const id of ids.slice(0, 2)) {
+        const got = await store.getMedia(id);
+        assert.ok(got.ok, `the photo still decrypts (${got.error || ''})`);
+        assert.match(got.dataUrl, /^data:image\/png;base64,\w/, 'and comes back as real image bytes');
+      }
     } finally {
       store.init(root);
     }
