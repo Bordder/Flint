@@ -148,7 +148,10 @@ async function checkReminder() {
     if (nowMin < target || nowMin > target + 60) return;
     reminderFiredOn = today;
     if (await todayAlreadyWritten()) return;
-    const notif = new Notification({ title: 'Flint', body: 'A quiet moment to write today?' });
+    // Deliberately says nothing about what Flint is for. In tray mode this can
+    // appear while someone else is at a shared machine, and Windows keeps toasts
+    // in its notification history where they can be read later.
+    const notif = new Notification({ title: 'Flint', body: 'A quiet moment, if you would like one.' });
     notif.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
     notif.show();
   } catch { /* never let a reminder break the app */ }
@@ -201,28 +204,44 @@ function destroyTray() {
 async function applyBackgroundMode(opts = {}) {
   let background = opts.background;
   let startup = opts.startup;
-  if (background === undefined) {
-    try { background = await store.getRunInBackground(); } catch { background = backgroundActive; }
-  }
-  if (startup === undefined) {
-    try { startup = await store.getStartWithWindows(); } catch { startup = background; }
+  if (background === undefined || startup === undefined) {
+    try {
+      const prefs = await store.readBackgroundPrefsStrict();
+      if (background === undefined) background = prefs.background;
+      if (startup === undefined) startup = prefs.startup;
+    } catch {
+      // The settings could not be READ. That is not the same as "switched off",
+      // and treating it as off would drop the tray icon and delete the user's
+      // Windows startup entry over a transient disk problem. Leave both exactly
+      // as they are and try again next time.
+      if (background === undefined) background = backgroundActive;
+      if (startup === undefined) {
+        try { startup = app.getLoginItemSettings().openAtLogin; } catch { startup = backgroundActive; }
+      }
+    }
   }
   const trayOk = background ? ensureTray() : (destroyTray(), false);
   // Only claim background mode if there is really an icon to click.
   backgroundActive = Boolean(background) && trayOk;
   // The testing build shares productName with the installed app, so writing the
   // login item from a dev run would point the real Run entry at electron.exe.
+  let startupOk = true;
   if (!isDev) {
     try {
       // --hidden only makes sense when there is a tray to hide into; otherwise a
       // sign-in launch would orphan an invisible window with no way to reach it.
       app.setLoginItemSettings({ openAtLogin: Boolean(startup), args: backgroundActive ? ['--hidden'] : [] });
-    } catch { /* best effort */ }
+      // Read it back. On Windows this call generally fails SILENTLY rather than
+      // throwing (a policy-locked Run key, for instance), so the catch below is
+      // not the path that gets taken and trusting it would report a success that
+      // never happened.
+      startupOk = app.getLoginItemSettings().openAtLogin === Boolean(startup);
+    } catch { startupOk = false; }
   }
   // Safety net: never sit hidden with no tray to reach (e.g. a stale --hidden
   // launch after background was turned off, or a tray that failed to appear).
   if (!backgroundActive && win && !win.isDestroyed() && !win.isVisible()) win.show();
-  return { background: backgroundActive, startup: Boolean(startup), trayOk };
+  return { background: backgroundActive, startup: Boolean(startup), trayOk, startupOk };
 }
 
 // The one-time "keep Flint in the tray?" question. Asked once in the app's
@@ -295,10 +314,16 @@ async function maybeTrayNotice() {
 
 let updateManualCheck = false; // was the in-flight check user-initiated?
 let updateBusy = false;
+let updateDownloading = false; // a download the user asked for is in flight
 
+// `manual` decides whether the renderer is allowed to show an error. A download
+// is always something the user clicked, but it used to inherit whatever
+// updateManualCheck was left at, and the silent startup check sets that to
+// false, so a failed download reported nothing at all and the banner sat on
+// "Downloading update..." for ever.
 function sendUpdate(status, info) {
   if (win && !win.isDestroyed()) {
-    win.webContents.send('update:status', { status, info: info || null, manual: updateManualCheck });
+    win.webContents.send('update:status', { status, info: info || null, manual: updateManualCheck || updateDownloading });
   }
 }
 
@@ -309,9 +334,11 @@ function setupUpdates() {
   autoUpdater.on('checking-for-update', () => sendUpdate('checking'));
   autoUpdater.on('update-available', (info) => { updateBusy = false; sendUpdate('available', { version: info && info.version }); });
   autoUpdater.on('update-not-available', () => { updateBusy = false; sendUpdate('none'); });
-  autoUpdater.on('error', () => { updateBusy = false; sendUpdate('error'); }); // offline / 404 / anything: stay quiet
+  // offline / 404 / anything: stay quiet on a silent startup check, but a
+  // download the user is watching must always report why it stopped.
+  autoUpdater.on('error', () => { updateBusy = false; sendUpdate('error'); updateDownloading = false; });
   autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.max(0, Math.min(100, Math.round((p && p.percent) || 0))) }));
-  autoUpdater.on('update-downloaded', (info) => { updateBusy = false; sendUpdate('ready', { version: info && info.version }); });
+  autoUpdater.on('update-downloaded', (info) => { updateBusy = false; updateDownloading = false; sendUpdate('ready', { version: info && info.version }); });
 
   setTimeout(() => { runUpdateCheck(false); }, 4000);
 }
@@ -873,8 +900,9 @@ ipcMain.handle('startwithwindows:get', async () => {
 ipcMain.handle('startwithwindows:set', async (_e, on) => {
   try {
     const enabled = await store.setStartWithWindows(on);
-    await applyBackgroundMode({ startup: enabled });
-    return { ok: true, enabled };
+    // Report what Windows actually did, not what we asked it to do.
+    const applied = await applyBackgroundMode({ startup: enabled });
+    return { ok: true, enabled, startupOk: applied.startupOk !== false };
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
@@ -1242,10 +1270,18 @@ ipcMain.handle('update:download', async () => {
   if (!autoUpdater) return { ok: false };
   try {
     updateBusy = true;
-    autoUpdater.downloadUpdate();
+    updateDownloading = true;
+    // downloadUpdate returns a promise. Not catching it meant a rejection went
+    // nowhere and the progress bar froze at whatever percentage it reached.
+    Promise.resolve(autoUpdater.downloadUpdate()).catch(() => {
+      updateBusy = false;
+      sendUpdate('error');
+      updateDownloading = false;
+    });
     return { ok: true };
   } catch {
     updateBusy = false;
+    updateDownloading = false;
     sendUpdate('error');
     return { ok: false };
   }
@@ -1257,7 +1293,9 @@ ipcMain.handle('update:install', async () => {
   setImmediate(() => {
     // If the install cannot start, the close guard must come back. Leaving
     // allowClose set would let the next close discard unsaved words in silence.
-    try { autoUpdater.quitAndInstall(); } catch { allowClose = false; }
+    // Tell the user too: "Installing. Flint will close and reopen itself in a
+    // moment." otherwise stays on screen for ever with nothing happening.
+    try { autoUpdater.quitAndInstall(); } catch { allowClose = false; sendUpdate('error'); }
   });
   return { ok: true };
 });

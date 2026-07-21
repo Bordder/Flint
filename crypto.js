@@ -58,8 +58,12 @@ function slotParams(slot) {
     && params.r >= b.minR && params.r <= b.maxR
     && params.p >= b.minP && params.p <= b.maxP;
   if (!sane) {
-    const err = new Error('The journal file asks for key settings Flint does not recognise.');
-    err.code = 'FLINT_DAMAGED';
+    // A DISTINCT code, because this throws BEFORE any key is derived. Callers
+    // treat FLINT_DAMAGED as "the PIN was right but the file is broken", which
+    // here would be a guess dressed as a fact: with unusable parameters no PIN
+    // can even be checked, so every PIN typed would be told it was correct.
+    const err = new Error('Flint cannot check your PIN, because the journal file asks for key settings it does not recognise.');
+    err.code = 'FLINT_BAD_PARAMS';
     throw err;
   }
   return params;

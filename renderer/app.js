@@ -721,18 +721,23 @@ function awayPhrase(ms) {
 function maybeShowGreeting() {
   if (greetingShown || !appReady) return;
   const box = $('greeting'); if (!box) return;
+  // Consume these BEFORE the early returns below. They used to be cleared at the
+  // bottom, so on any day the greeting did not appear (today already written,
+  // no history yet) the suppression flag survived and swallowed the away line on
+  // a later tray return, which is the one place it would have been said.
+  const awayMs = hiddenAt ? Date.now() - hiddenAt : 0;
+  const suppressed = suppressAwayOnce;
+  hiddenAt = 0;
+  suppressAwayOnce = false;
   const today = todayISO();
   if (entryHasAnyContent(data.entries[today])) return;
   const written = Object.keys(data.entries).filter((d) => d < today && entryHasAnyContent(data.entries[d])).sort();
   if (!written.length) return;
 
-  // How long the window sat in the tray, if it did. Suppressed during the
-  // starter week, when someone is still finding their feet and does not need to
-  // hear how long anything has been.
-  const awayMs = hiddenAt ? Date.now() - hiddenAt : 0;
-  hiddenAt = 0; // read once: a second show without a hide in between says nothing
-  const away = (suppressAwayOnce || inStarterWeek()) ? '' : awayPhrase(awayMs);
-  suppressAwayOnce = false;
+  // Suppressed during the starter week, when someone is still finding their feet
+  // and does not need to hear how long anything has been. awayMs and the
+  // suppression flag were both consumed at the top of this function.
+  const away = (suppressed || inStarterWeek()) ? '' : awayPhrase(awayMs);
 
   const last = written[written.length - 1];
   let msg = '';
@@ -888,7 +893,11 @@ function cancelAutosave() {
 }
 async function flushAutosave() {
   autosaveDeadline = 0;
-  if (!canAutosave() || !isDirty()) { renderIndicator('saved'); return; }
+  // "Cannot save right now" and "nothing to save" are different things, and
+  // painting the saved dot for both told the writer their words were on disk
+  // when the flush had actually declined.
+  if (!canAutosave()) { renderIndicator(isDirty() ? 'paused' : 'saved'); return; }
+  if (!isDirty()) { renderIndicator('saved'); return; }
   await saveCurrent({ quiet: true, backup: false, allowDelete: false, silentError: true });
   renderIndicator(isDirty() ? 'dirty' : 'saved');
 }
@@ -3454,9 +3463,16 @@ async function init() {
     const res = await safeCall(api.setStartWithWindows, on);
     const st = $('startup-status');
     if (!st) return;
-    st.textContent = res.ok
-      ? (res.enabled ? 'Flint will open quietly in the notification area when you sign in.' : 'Flint will only open when you open it.')
-      : 'That could not be changed.';
+    if (!res.ok) { st.textContent = 'That could not be changed.'; return; }
+    if (res.startupOk === false) {
+      // Windows can refuse this silently, for example under a managed policy.
+      st.textContent = 'Windows did not accept that change, so Flint will not start when you sign in. This computer may be managed by someone else.';
+      $('startup-toggle').checked = !on;
+      return;
+    }
+    st.textContent = res.enabled
+      ? 'Flint will open quietly in the notification area when you sign in.'
+      : 'Flint will only open when you open it.';
   });
   $('hwaccel-toggle').addEventListener('change', async () => {
     const on = $('hwaccel-toggle').checked;
@@ -3508,7 +3524,19 @@ async function init() {
   $('version-line').textContent = verRes.ok ? `Flint version ${verRes.version}` : 'Flint';
   const updSetting = await safeCall(api.getUpdateSetting);
   $('update-toggle').checked = updSetting.ok ? updSetting.enabled : true;
-  $('update-toggle').addEventListener('change', async () => { const on = $('update-toggle').checked; await safeCall(api.setUpdateSetting, on); setUpdateSettingStatus(on ? 'Flint will check for a new version when it opens.' : 'Update checks are off, Flint stays fully offline.'); });
+  $('update-toggle').addEventListener('change', async () => {
+    const on = $('update-toggle').checked;
+    const res = await safeCall(api.setUpdateSetting, on);
+    // Do not promise "stays fully offline" without knowing the setting saved.
+    // If it did not, Flint would still check on the next launch, and that is
+    // precisely the promise a privacy-minded user would rely on.
+    if (!res.ok) {
+      $('update-toggle').checked = !on;
+      setUpdateSettingStatus('That could not be changed, so it is unchanged.');
+      return;
+    }
+    setUpdateSettingStatus(on ? 'Flint will check for a new version when it opens.' : 'Update checks are off, Flint stays fully offline.');
+  });
   $('update-check-btn').addEventListener('click', () => { setUpdatePanel('Checking…'); api.updateCheck(); });
 
   renderWriterHead();

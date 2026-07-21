@@ -98,3 +98,25 @@ npm run publish
 That builds and uploads all three files in one go. Keep the token private, and
 never commit or share it. (It also works from any web host instead of GitHub, by
 switching the `publish` config in `package.json`.)
+
+## Accepted risk: the build is not code-signed
+
+`package.json` sets no `certificateFile`, `certificateSubjectName` or
+`publisherName`, so the installer carries no Authenticode signature. Two
+consequences, both deliberate rather than overlooked:
+
+- **Windows SmartScreen warns on every install and every update.** That is
+  expected, and the README explains how to verify a download by its SHA256
+  instead. The real cost is that it trains people to click through warnings.
+- **electron-updater cannot verify the signature of what it downloads.** Its
+  Windows signature check returns early when no `publisherName` is configured,
+  so the only integrity controls are HTTPS and the sha512 in `latest.yml`, both
+  served from the same place. Anyone who could tamper with the release could
+  tamper with both.
+
+What keeps this reasonable: `autoDownload` and `autoInstallOnAppQuit` are both
+off, so nothing is fetched or installed without two deliberate clicks, and the
+stated threat model puts the adversary at this computer rather than at GitHub.
+
+Buying a certificate closes it. Until then this is a known, accepted risk, and
+worth re-reading if the project ever gains enough users to be worth attacking.

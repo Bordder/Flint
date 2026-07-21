@@ -934,6 +934,76 @@ async function main() {
   // H5. A PIN change rewrote every photo in place under the new key, then threw
   // that key away if any single one failed. Everything already rewritten became
   // unreadable forever, while the message said "Nothing was changed".
+  // L6. slotParams throws BEFORE any key is derived, so a vault with unusable
+  // scrypt settings could not check ANY pin. Reporting that as "your PIN is
+  // correct, but the file is damaged" told every guess it had guessed right.
+  await test('L6: unusable key settings say the PIN could not be checked, not that it was right', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l6-'));
+    const PL = store.init(tmpRoot);
+    try {
+      await store.saveData(store.emptyData());
+      assert.ok((await store.enableEncryption('realpin11')).ok, 'encrypted');
+      store.lock();
+
+      // tamper with the stored cost parameters, as disk rot or an edit would
+      const vault = JSON.parse(fs.readFileSync(PL.dataFile, 'utf8'));
+      const slot = vault.pin || (vault.slots && vault.slots.pin);
+      assert.ok(slot && typeof slot === 'object', 'the vault exposes a pin slot to tamper with');
+      slot.N = 3; // not a power of two, and far outside the accepted bounds
+      fs.writeFileSync(PL.dataFile, JSON.stringify(vault, null, 2));
+
+      const res = await store.unlock('anything-at-all');
+      assert.strictEqual(res.ok, false, 'a bogus PIN is still refused');
+      assert.doesNotMatch(res.error || '', /is correct/i, 'and is never told it was correct');
+      assert.match(res.error || '', /could not even check|does not recognise/i, 'the message says the PIN could not be checked');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  // L12. Backup filenames used to carry the date and time, to the millisecond,
+  // of every write. In a folder the UI suggests syncing, that is a readable
+  // record of when someone wrote in their diary, and unlike an mtime it survives
+  // being copied. Encryption does not hide a filename.
+  await test('L12: scheduled backup filenames carry no timestamp, and still prune', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l12-'));
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l12-dest-'));
+    store.init(tmpRoot);
+    try {
+      const d = store.emptyData();
+      d.entries['2026-04-04'] = { note: 'a day', updatedAt: 'x' };
+      await store.saveData(d);
+      assert.ok((await store.setBackupFolder(dest)).ok, 'backup folder accepted');
+      await store.setBackupSettings({ enabled: true });
+      // keep is deliberately fixed rather than user-settable, so run past it
+      const keep = (await store.getBackupSettings()).keep;
+
+      const dir = path.join(dest, 'Flint backups');
+      // a leftover from an older version, which must still be aged out
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'flint-backup-20240101-000000-000.json'), '{"version":1,"entries":{}}');
+
+      for (let i = 0; i < keep + 2; i++) {
+        const r = await store.runScheduledBackup();
+        assert.ok(r.ok, `backup ${i} ran (${r.error || ''})`);
+        await new Promise((res) => setTimeout(res, 8)); // distinct mtimes
+      }
+      const files = fs.readdirSync(dir).filter((n) => /^flint-backup-.*\.json$/.test(n));
+      assert.ok(files.length <= keep, `pruned to keep (${files.length} files, keep=${keep})`);
+      assert.ok(files.length >= 1, 'and at least one copy exists');
+      assert.ok(!files.includes('flint-backup-20240101-000000-000.json'), 'the old dated leftover was aged out, not orphaned');
+      for (const n of files) {
+        assert.doesNotMatch(n, /\d{8}-\d{6}/, `${n} carries no date or time`);
+        assert.match(n, /^flint-backup-\d{2}\.json$/, `${n} is a plain slot name`);
+      }
+      // the copies are real journals, not empty placeholders
+      const first = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+      assert.ok(first.entries && first.entries['2026-04-04'], 'the copy holds the journal');
+    } finally {
+      store.init(root);
+    }
+  });
+
   await test('H5: a PIN change that fails partway leaves every photo readable', async () => {
     const rootR = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h5-'));
     const PR = store.init(rootR);

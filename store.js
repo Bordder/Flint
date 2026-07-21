@@ -710,6 +710,17 @@ async function setThemePresets(list) {
 
 // Whether Flint keeps running in the tray (and starts with Windows) so daily
 // reminders can reach the user when the window is closed. Off by default.
+// Used by applyBackgroundMode, which must be able to tell "off" from "could not
+// read". Treating an unreadable settings file as off destroys the tray icon and
+// the user's Windows startup entry over a transient disk hiccup, so this one
+// deliberately throws where the plain getter shrugs.
+async function readBackgroundPrefsStrict() {
+  const s = await loadSettings(); // throws SettingsUnreadable
+  const background = s.runInBackground === true;
+  const startup = s.startWithWindows === undefined ? background : s.startWithWindows === true;
+  return { background, startup };
+}
+
 async function getRunInBackground() {
   const s = await loadSettingsOrDefault();
   return s.runInBackground === true;
@@ -932,7 +943,15 @@ const BACKUP_KEEP_DEFAULT = 10;
 const BACKUP_SUBFOLDER = 'Flint backups';
 // Only the exact grammar this build writes, so pruning can never reach a file
 // somebody else put there that merely looks similar.
-const BACKUP_PATTERN = /^flint-backup-\d{8}-\d{6}-\d{3}\.json$/;
+//
+// Copies used to be named flint-backup-<date>-<time>-<ms>.json. In a folder the
+// user was encouraged to sync, that put a readable record of exactly when they
+// wrote in their diary, in the filename itself, where it survives being copied
+// even though mtimes often do not. Encryption does not hide a filename. New
+// copies use a plain slot number instead; the dated grammar is still recognised
+// so existing copies keep being pruned and swept rather than orphaned.
+const BACKUP_PATTERN_SLOT = /^flint-backup-\d{2}\.json$/;
+const BACKUP_PATTERN = /^flint-backup-(?:\d{8}-\d{6}-\d{3}|\d{2})\.json$/;
 
 // A backup destination is only ever set from a folder picker in the main
 // process, never from a path handed over IPC. A UNC path (\\host\share) would
@@ -1013,6 +1032,37 @@ async function backupMedia(destRoot) {
   return { copied, failed };
 }
 
+// Which slot to write next, kept as a plain counter in settings rather than
+// worked out from the files. Modification times cannot be used for this:
+// fs.copyFile carries the SOURCE file's mtime across, so every copy would share
+// the journal's timestamp and look the same age. Sync tools rewrite mtimes too.
+// A counter is deterministic and, unlike a date in the filename, says nothing
+// about when anyone wrote.
+function slotName(i) { return `flint-backup-${String(i).padStart(2, '0')}.json`; }
+
+async function nextBackupSlot(keep) {
+  const want = Math.max(1, Math.min(99, Number(keep) || BACKUP_KEEP_DEFAULT));
+  let n = 1;
+  try {
+    const s = await loadSettings();
+    const cur = s.autoBackup && typeof s.autoBackup === 'object' ? s.autoBackup : {};
+    n = Number.isInteger(cur.nextSlot) && cur.nextSlot >= 1 && cur.nextSlot <= want ? cur.nextSlot : 1;
+    cur.nextSlot = n >= want ? 1 : n + 1;
+    s.autoBackup = cur;
+    await saveSettings(s);
+  } catch {
+    n = 1; // unreadable settings: overwrite slot 1 rather than grow without bound
+  }
+  return slotName(n);
+}
+
+// Older versions wrote flint-backup-<date>-<time>-<ms>.json. Those carry their
+// own date, so they can be ordered without trusting mtimes, and they are aged
+// out first: they are from an older version and are the ones leaking timestamps.
+function datedBackupsOldestFirst(names) {
+  return names.filter((n) => /^flint-backup-\d{8}-\d{6}-\d{3}\.json$/.test(n)).sort();
+}
+
 function runScheduledBackup() {
   // Serialised with saves: copying the file while it is being replaced would
   // otherwise capture a half-written moment.
@@ -1023,12 +1073,21 @@ function runScheduledBackup() {
     if (!fs.existsSync(P.dataFile)) return { ok: false, error: 'There is nothing to back up yet.' };
     const dir = path.join(cfg.folder, BACKUP_SUBFOLDER);
     await fsp.mkdir(dir, { recursive: true });
-    const dest = path.join(dir, `flint-backup-${stamp()}.json`);
+    const dest = path.join(dir, await nextBackupSlot(cfg.keep));
     await fsp.copyFile(P.dataFile, dest);
+    // copyFile brings the source's timestamps with it, so without this every
+    // copy would claim to have been made whenever the journal was last written.
+    try { const now = new Date(); await fsp.utimes(dest, now, now); } catch { /* cosmetic */ }
     const media = await backupMedia(dir);
 
-    const names = (await fsp.readdir(dir)).filter((n) => BACKUP_PATTERN.test(n)).sort().reverse();
-    for (const old of names.slice(cfg.keep)) await fsp.unlink(path.join(dir, old)).catch(() => {});
+    // Slots are self-limiting (there are at most `keep` of them), so pruning
+    // only has to age out the dated files left by older versions, oldest first.
+    const existing = (await fsp.readdir(dir)).filter((n) => BACKUP_PATTERN.test(n));
+    const dated = datedBackupsOldestFirst(existing);
+    const over = existing.length - cfg.keep;
+    for (const old of dated.slice(0, Math.max(0, over))) {
+      await fsp.unlink(path.join(dir, old)).catch(() => {});
+    }
 
     // The copy has already happened, so a settings problem must not be reported
     // as a failed backup. Recording when it last ran is bookkeeping, not the job.
@@ -1716,6 +1775,10 @@ async function openVaultWith(vault, opener, secretName) {
   try {
     ({ dk, data } = await opener());
   } catch (err) {
+    if (err && err.code === 'FLINT_BAD_PARAMS') {
+      // Thrown before any key is derived, so we cannot say the secret was right.
+      return { ok: false, damaged: true, error: `Flint could not even check your ${secretName}, because the journal file asks for key settings it does not recognise. The file looks damaged. A backup can be restored from your data folder.` };
+    }
     if (err && err.code === 'FLINT_DAMAGED') {
       return { ok: false, damaged: true, error: `Your ${secretName} is correct, but the journal file is damaged, so it could not be opened. A backup can be restored from your data folder.` };
     }
@@ -1917,6 +1980,9 @@ function disableEncryption(pin) {
     try {
       ({ data, dk } = await vaultCrypto.openWithPin(s.vault, pin));
     } catch (err) {
+      if (err && err.code === 'FLINT_BAD_PARAMS') {
+        return { ok: false, error: 'Flint could not even check your PIN, because the journal file asks for key settings it does not recognise. Encryption was left on.' };
+      }
       if (err && err.code === 'FLINT_DAMAGED') {
         return { ok: false, error: 'Your PIN is correct, but the journal file is damaged, so encryption was left on.' };
       }
@@ -2027,6 +2093,11 @@ async function rekeyBackups(oldDk, newDk, newVault) {
     try {
       const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
       if (!vaultCrypto.isVault(parsed)) { await fsp.unlink(file).catch(() => {}); removed++; continue; }
+      // Already on the new key? Then it is the backup written moments ago by
+      // this very rotation. Deleting it was harmless (an identical copy of the
+      // journal survived) but it was counted as a discarded backup, so a
+      // perfectly clean PIN change warned the user it had thrown one away.
+      try { vaultCrypto.openWithDk(parsed, newDk); continue; } catch { /* still on the old key, as expected */ }
       let body;
       try { body = vaultCrypto.openWithDk(parsed, oldDk); }
       catch { await fsp.unlink(file).catch(() => {}); removed++; continue; }
@@ -2078,6 +2149,9 @@ function changeEncryptionPin(currentPin, newPin) {
     try {
       ({ data, dk } = await vaultCrypto.openWithPin(s.vault, currentPin));
     } catch (err) {
+      if (err && err.code === 'FLINT_BAD_PARAMS') {
+        return { ok: false, error: 'Flint could not even check your current PIN, because the journal file asks for key settings it does not recognise. The PIN was not changed.' };
+      }
       if (err && err.code === 'FLINT_DAMAGED') {
         return { ok: false, error: 'Your current PIN is correct, but the journal file is damaged, so the PIN was not changed.' };
       }
@@ -2151,7 +2225,7 @@ function resetAll() {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, getStartWithWindows, setStartWithWindows, getTrayAsked, setTrayAsked, getTrayNoticeShown, setTrayNoticeShown, getHardwareAcceleration, setHardwareAcceleration, readStartupFlagsSync, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, readBackgroundPrefsStrict, getStartWithWindows, setStartWithWindows, getTrayAsked, setTrayAsked, getTrayNoticeShown, setTrayNoticeShown, getHardwareAcceleration, setHardwareAcceleration, readStartupFlagsSync, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };
