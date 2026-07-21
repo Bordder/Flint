@@ -447,7 +447,11 @@ function createWindow() {
             trayOfferPending = false;
             if (choice === 'tray') {
               try { await store.setRunInBackground(true); } catch { /* best effort */ }
-              const applied = await applyBackgroundMode({ background: true });
+              // Explicit startup, for the same reason as the Settings toggle:
+              // answering this question must not add a Windows startup entry.
+              let startup = false;
+              try { startup = await store.getStartWithWindows(); } catch { startup = false; }
+              const applied = await applyBackgroundMode({ background: true, startup });
               if (applied.background) {
                 closing = false;
                 win.hide(); // the hide handler raises the one-time "still here" notice
@@ -812,10 +816,14 @@ ipcMain.handle('background:get', async () => {
 ipcMain.handle('background:set', async (_e, on) => {
   try {
     const wanted = await store.setRunInBackground(on);
+    // Pass startup explicitly, or getStartWithWindows's upgrade fallback reads
+    // back the runInBackground we just wrote and silently adds a Windows startup
+    // entry, which the copy beside this toggle promises it will never do.
+    const startup = await store.getStartWithWindows();
     // Pass the value we just wrote rather than making applyBackgroundMode read it
     // back, and report what actually happened: if the tray failed to appear,
     // promising the user a tray icon would be a lie they discover the hard way.
-    const applied = await applyBackgroundMode({ background: wanted });
+    const applied = await applyBackgroundMode({ background: wanted, startup });
     return { ok: true, enabled: applied.background, trayOk: applied.trayOk, wanted };
   } catch (err) { return { ok: false, error: err.message }; }
 });

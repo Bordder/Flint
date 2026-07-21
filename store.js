@@ -678,6 +678,11 @@ async function getRunInBackground() {
 }
 async function setRunInBackground(on) {
   const s = await loadSettings();
+  // Pin down startWithWindows BEFORE changing the value it used to be inferred
+  // from. Without this, the upgrade fallback below reads the value we are about
+  // to write, so ticking "keep Flint running" silently adds a Windows startup
+  // entry that the setting beside it promises it will never add.
+  if (s.startWithWindows === undefined) s.startWithWindows = s.runInBackground === true;
   s.runInBackground = Boolean(on);
   await saveSettings(s);
   return s.runInBackground;
@@ -690,7 +695,16 @@ async function setRunInBackground(on) {
 // their reminders would stop arriving after the next reboot, with no error.
 async function getStartWithWindows() {
   const s = await loadSettings();
-  return s.startWithWindows === undefined ? s.runInBackground === true : s.startWithWindows === true;
+  if (s.startWithWindows === undefined) {
+    // Upgrade path, and it runs exactly once. Write the inherited answer down so
+    // the fallback can never be consulted again: leaving it implicit is what let
+    // a later change to runInBackground be read as a decision about startup.
+    const inherited = s.runInBackground === true;
+    s.startWithWindows = inherited;
+    try { await saveSettings(s); } catch { /* the value below is still correct */ }
+    return inherited;
+  }
+  return s.startWithWindows === true;
 }
 async function setStartWithWindows(on) {
   const s = await loadSettings();

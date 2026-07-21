@@ -413,18 +413,36 @@ async function main() {
   // silence and their reminders stop after the next reboot.
   await test('start-with-Windows falls back to the old combined setting, then splits cleanly', async () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-startup-'));
+    const upgradeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-upgrade-'));
     try {
       store.init(tmpRoot);
       assert.strictEqual(await store.getStartWithWindows(), false, 'a brand new install starts off');
 
-      // simulate an existing install upgrading: only the old key is present
-      await store.setRunInBackground(true);
-      assert.strictEqual(await store.getStartWithWindows(), true, 'existing tray users keep starting with Windows');
+      // H2. Turning the tray on is NOT a decision about Windows startup. The
+      // upgrade fallback used to read the value this had just written, so
+      // ticking "keep Flint running" silently added a Run entry the setting
+      // beside it promises it never adds.
+      assert.strictEqual(await store.setRunInBackground(true), true);
+      assert.strictEqual(
+        await store.getStartWithWindows(), false,
+        'turning the tray on does not turn start-with-Windows on'
+      );
 
-      // once answered explicitly, the new key wins and the two are independent
-      assert.strictEqual(await store.setStartWithWindows(false), false);
-      assert.strictEqual(await store.getStartWithWindows(), false, 'an explicit no survives runInBackground being on');
-      assert.strictEqual(await store.getRunInBackground(), true, 'the tray setting is untouched by the split');
+      // once answered explicitly, the two are independent in both directions
+      assert.strictEqual(await store.setStartWithWindows(true), true);
+      assert.strictEqual(await store.setRunInBackground(false), false);
+      assert.strictEqual(await store.getStartWithWindows(), true, 'turning the tray off does not turn startup off');
+
+      // A REAL upgrade: settings.json written by an older version, holding only
+      // the old combined key. Those users had a startup entry and must keep it.
+      const PU = store.init(upgradeRoot);
+      fs.writeFileSync(PU.settingsFile, JSON.stringify({ runInBackground: true, onboarded: true }), 'utf8');
+      assert.strictEqual(await store.getStartWithWindows(), true, 'existing tray users keep starting with Windows');
+      // and the answer is written down, so the fallback is never consulted again
+      const after = JSON.parse(fs.readFileSync(PU.settingsFile, 'utf8'));
+      assert.strictEqual(after.startWithWindows, true, 'the inherited answer is materialised on disk');
+      assert.strictEqual(await store.setRunInBackground(false), false);
+      assert.strictEqual(await store.getStartWithWindows(), true, 'and is not re-derived afterwards');
     } finally {
       store.init(root); // always switch back so later tests use the main root
     }

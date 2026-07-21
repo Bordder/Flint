@@ -2027,6 +2027,15 @@ async function lockAndGate() {
     const away = $('pin-away'); if (away) { away.hidden = true; away.textContent = ''; }
     loadEditor(currentDate); renderCount(); renderCalendar(); renderWriterHead();
     $('note').focus();
+  } else {
+    // The reload after unlocking failed, or came back still locked. This branch
+    // did not exist: the page kept the emptied `data` from the lock, so it looked
+    // like a brand new journal, saving stayed on, and the first word typed wrote
+    // that empty journal over the real one. Treat it exactly as init does.
+    loadFailed = true;
+    showLoadErrorNotice(res.locked
+      ? 'Your journal is still locked, so it could not be opened. Saving is switched off until it opens, so nothing can be written over it. Please try unlocking again.'
+      : res.error);
   }
   resetAutoLockTimer();
 }
@@ -2109,19 +2118,33 @@ function resetAutoLockTimer() {
   autoLockTimer = setTimeout(autoLockNow, autoLockMinutes * 60 * 1000);
 }
 
-// An automatic lock must never cost anyone their words: save first, and if that
-// save fails, stay unlocked rather than clear the page.
+// The ONE safe way to lock, and every automatic lock path must come through it.
+// Locking clears the page, so a lock that discards unsaved words is worse than a
+// lock that arrives a moment late. The save lived in autoLockNow before, which
+// meant a second lock path (the Windows lock-screen and sleep hook) was added
+// later without it and quietly threw writing away. Keeping it here means a
+// future caller cannot reintroduce that. Returns false if it did not lock.
+async function lockSafely() {
+  if (!hasLock() || !appReady) return false;
+  if ($('pin-gate').hidden === false) return false; // already locked
+  cancelAutosave();
+  // Let any save already in flight finish rather than racing it.
+  for (let i = 0; i < 50 && saving; i++) await new Promise((r) => setTimeout(r, 15));
+  if (saving) return false;
+  if (isDirty()) {
+    const saved = await saveCurrent({ quiet: true, backup: true, allowDelete: true, silentError: true });
+    if (!saved) return false; // stay unlocked rather than clear the page
+  }
+  await lockAndGate();
+  return true;
+}
+
 async function autoLockNow() {
   if (!hasLock() || !appReady || $('pin-gate').hidden === false) return;
   // Don't lock out from under an open dialog or settings panel: being in one is a
   // sign someone is still here. The timer resumes once it is closed.
   if (modalIsOpen() || openPanelEl) { resetAutoLockTimer(); return; }
-  cancelAutosave();
-  if (isDirty()) {
-    const saved = await saveCurrent({ quiet: true, backup: true, allowDelete: true, silentError: true });
-    if (!saved) { resetAutoLockTimer(); return; }
-  }
-  await lockAndGate();
+  if (!(await lockSafely())) resetAutoLockTimer();
 }
 
 /* security settings (encryption) */
@@ -3173,12 +3196,10 @@ async function init() {
 
   // tray bridges
   api.onFlushNow(() => { flushForHide(); });
-  // Locking Windows or sleeping the machine means the person has really gone.
-  api.onLockNow(() => {
-    if (!hasLock() || !appReady) return;
-    if ($('pin-gate').hidden === false) return; // already locked
-    lockAndGate();
-  });
+  // Locking Windows or sleeping the machine means the person has really gone, so
+  // unlike the idle timer this does NOT stand down for an open panel or dialog.
+  // It still goes through lockSafely, so the words reach disk first.
+  api.onLockNow(() => { lockSafely(); });
   api.onWindowHidden((payload) => {
     // Only a hide into the tray counts as being away. Minimising is not.
     if (payload && payload.toTray) hiddenAt = Date.now();
@@ -3371,6 +3392,11 @@ async function init() {
     // could not be created, promising one is a lie found out the hard way.
     $('background-toggle').checked = res.enabled;
     setBackgroundStatus(res.enabled, res.trayOk !== false);
+    // Keep the startup checkbox honest: it is read once at boot, and this is the
+    // setting it used to be silently inferred from, so re-read it rather than
+    // letting the UI claim something the registry disagrees with.
+    const sw = await safeCall(api.getStartWithWindows);
+    if (sw.ok && $('startup-toggle')) $('startup-toggle').checked = sw.enabled;
   });
   $('startup-toggle').addEventListener('change', async () => {
     const on = $('startup-toggle').checked;
