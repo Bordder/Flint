@@ -104,6 +104,15 @@ function applyMutant(raw, m) {
   return null;
 }
 
+// The red-baseline path below exits early and used to walk away from the whole
+// scratch tree. One fixed path, so it was self-healing on the next run rather
+// than unbounded, but leaving a copy of the journal code lying in temp after a
+// failure is the wrong default.
+process.on('exit', () => {
+  try { fs.rmSync(WORK, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+  catch { /* best effort: never fail a run over a temp folder */ }
+});
+
 freshCopy();
 if (!runSuite()) { console.error('  BASELINE IS RED. Fix the suite before mutating.'); process.exit(2); }
 console.log('  baseline: green\n');

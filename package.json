@@ -1,6 +1,7 @@
 {
   "name": "flint", "productName": "Flint", "version": "1.5.1", "description": "Flint, a quiet, private daily journal. Your notes never leave this computer.", "main": "main.js", "license": "MIT", "private": true, "scripts": {
-    "start": "electron .", "test": "node tests/store.test.js", "smoke:pdf": "electron scripts/pdf-smoke.js", "smoke:updater": "electron scripts/updater-smoke.js", "smoke:tray": "electron scripts/tray-smoke.js", "dist": "electron-builder --win", "check:package": "node scripts/check-package.js", "check:mutation": "node scripts/mutation-check.js", "publish": "electron-builder --win --publish always"
+    "start": "electron .", "test": "node tests/store.test.js", "smoke:pdf": "electron scripts/pdf-smoke.js", "smoke:updater": "electron scripts/updater-smoke.js", "smoke:tray": "electron scripts/tray-smoke.js", "dist:build": "electron-builder --win",
+    "dist": "npm run dist:build && npm run check:package", "check:package": "node scripts/check-package.js", "check:mutation": "node scripts/mutation-check.js", "publish": "npm run dist && electron-builder --win --publish always"
   }, "build": {
     "appId": "com.local.flint", "productName": "Flint", "directories": {
       "output": "dist"

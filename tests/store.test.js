@@ -12,8 +12,38 @@ const fsp = fs.promises;
 const store = require('../store');
 const prompts = require('../shared/prompts');
 
+// Every throwaway data root this run creates, swept once at the very end.
+//
+// Deliberately NOT per test. The suite is ordered, and several roots outlive
+// the test that made them: the shared root at the top of main() carries a
+// backup ring written by one test and read back by another, and the crypto
+// block's root is created outside any test and threaded through the eighteen
+// that follow it. A tidy-looking rmSync in each finally breaks both.
+//
+// Left unswept, one run leaked 32 directories. Across a day of development and
+// the mutation harness, which re-runs the whole suite once per mutant, that had
+// reached 1,587 roots and 232 MB. Nothing in them is real journal data (every
+// root is a fresh mkdtemp that the tests populate with fixtures), but folders
+// full of journal-shaped JSON should not pile up on anyone's disk.
+const tempRoots = [];
+function tempRoot(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempRoots.push(dir);
+  return dir;
+}
+
+// An exit hook rather than a finally: the suite ends via process.exit() on both
+// the passing and failing paths, and an early throw lands in main().catch,
+// which exits too. Only an exit hook covers all three.
+process.on('exit', () => {
+  for (const dir of tempRoots) {
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+    catch { /* a leftover temp folder must never be what fails the run */ }
+  }
+});
+
 async function main() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-test-'));
+  const root = tempRoot('journal-test-');
   const P = store.init(root);
   let failures = 0;
 
@@ -64,7 +94,7 @@ async function main() {
   await test('autosave (backup:false) updates the main file but writes no backup', async () => {
     // Its own root so the extra saves never disturb the shared backup ring that
     // later ordering-sensitive tests (corruption recovery) rely on.
-    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-autosave-'));
+    const rootA = tempRoot('journal-autosave-');
     const PA = store.init(rootA);
     try {
       const data = store.emptyData();
@@ -102,7 +132,7 @@ async function main() {
   });
 
   await test('corruption with no backups starts empty but keeps the bad file', async () => {
-    const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-test2-'));
+    const root2 = tempRoot('journal-test2-');
     const P2 = store.init(root2);
     let result;
     try {
@@ -415,9 +445,9 @@ async function main() {
   // background had a startup entry too. If the fallback breaks, they lose it in
   // silence and their reminders stop after the next reboot.
   await test('start-with-Windows falls back to the old combined setting, then splits cleanly', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-startup-'));
-    const guardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-guard-'));
-    const upgradeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-upgrade-'));
+    const tmpRoot = tempRoot('flint-startup-');
+    const guardRoot = tempRoot('flint-guard-');
+    const upgradeRoot = tempRoot('flint-upgrade-');
     try {
       store.init(tmpRoot);
       assert.strictEqual(await store.getStartWithWindows(), false, 'a brand new install starts off');
@@ -470,7 +500,7 @@ async function main() {
   });
 
   await test('hardware acceleration defaults on and is readable synchronously', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-hwaccel-'));
+    const tmpRoot = tempRoot('flint-hwaccel-');
     try {
       store.init(tmpRoot);
       assert.strictEqual(await store.getHardwareAcceleration(), true, 'on unless turned off');
@@ -542,7 +572,7 @@ async function main() {
   // quarantined load sealed a vault around NOTHING, then deleted the plaintext
   // backups and the quarantined original, and reported success.
   await test('C1: encryption refuses to seal an empty journal while copies still exist', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-c1-'));
+    const tmpRoot = tempRoot('flint-c1-');
     const PX = store.init(tmpRoot);
     try {
       // a real journal with real writing, plus the backup that save() makes
@@ -580,7 +610,7 @@ async function main() {
   });
 
   await test('C1: a genuinely fresh install can still turn encryption on', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-c1b-'));
+    const tmpRoot = tempRoot('flint-c1b-');
     store.init(tmpRoot);
     try {
       const res = await store.enableEncryption('4471');
@@ -601,7 +631,7 @@ async function main() {
   let mediaId = null;
   const photoBytes = Buffer.from('89504e470d0a1a0a' + 'ab'.repeat(96), 'hex'); // a stand-in PNG
 
-  const cryptoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-crypto-'));
+  const cryptoRoot = tempRoot('flint-crypto-');
   const PC = store.init(cryptoRoot);
 
   await test('enableEncryption turns entries.json into an unreadable vault', async () => {
@@ -827,7 +857,7 @@ async function main() {
     // The disaster: a file held open for a moment by antivirus or a sync client
     // must NOT be read as "not encrypted". If it were, the key would be dropped
     // and the next save would write the journal to disk in the clear.
-    const rootU = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-unreadable-'));
+    const rootU = tempRoot('flint-unreadable-');
     const PU = store.init(rootU);
     try {
       await store.securityStatus();
@@ -858,7 +888,7 @@ async function main() {
   await test('a save refuses to write plaintext over a vault', async () => {
     // Belt and braces for the same disaster: even if the in-memory flag were
     // wrong, the bytes on disk get the final say.
-    const rootG = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-guard-'));
+    const rootG = tempRoot('flint-guard-');
     const PG = store.init(rootG);
     try {
       await store.securityStatus();
@@ -886,8 +916,8 @@ async function main() {
   // the file it could not open, so the next save resealed a new body under wraps
   // from a different key: a journal neither the PIN nor the recovery code opens.
   await test('H6: a vault the held key cannot open drops the key instead of adopting it', async () => {
-    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h6a-'));
-    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h6b-'));
+    const rootA = tempRoot('flint-h6a-');
+    const rootB = tempRoot('flint-h6b-');
     try {
       // journal B, encrypted under its own PIN, gives us a foreign vault
       const PB = store.init(rootB);
@@ -937,7 +967,7 @@ async function main() {
   // missing underneath it. That is always an outside event, and treating it as
   // "encryption is off" let the next autosave write every entry in the clear.
   await test('H7: losing the file does not silently turn encryption off', async () => {
-    const rootH = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h7-'));
+    const rootH = tempRoot('flint-h7-');
     const PH = store.init(rootH);
     try {
       const d = store.emptyData();
@@ -983,7 +1013,7 @@ async function main() {
   // U5. A prompt keyed 'note' writes its answer into the day's own body field,
   // which then overwrites it, and every export prints the day twice.
   await test('U5: a prompt cannot claim the key the day body uses', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u5-'));
+    const tmpRoot = tempRoot('flint-u5-');
     store.init(tmpRoot);
     try {
       const saved = await store.saveQuestions([
@@ -1015,8 +1045,8 @@ async function main() {
   // beside an encrypted journal for ever, surviving a PIN change and even
   // removing the photo from the app.
   await test('U3: enabling encryption clears readable photos from the backup folder too', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u3-'));
-    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u3-dest-'));
+    const tmpRoot = tempRoot('flint-u3-');
+    const dest = tempRoot('flint-u3-dest-');
     const PU = store.init(tmpRoot);
     try {
       await store.saveData(store.emptyData());
@@ -1060,8 +1090,8 @@ async function main() {
   // journals sat in the user's chosen backup folder, and the same delete removed
   // the only record of where that folder was.
   await test('U4: erase everything also clears the copies in the backup folder', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u4-'));
-    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-u4-dest-'));
+    const tmpRoot = tempRoot('flint-u4-');
+    const dest = tempRoot('flint-u4-dest-');
     store.init(tmpRoot);
     try {
       const d = store.emptyData();
@@ -1093,7 +1123,7 @@ async function main() {
   // scrypt settings could not check ANY pin. Reporting that as "your PIN is
   // correct, but the file is damaged" told every guess it had guessed right.
   await test('L6: unusable key settings say the PIN could not be checked, not that it was right', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l6-'));
+    const tmpRoot = tempRoot('flint-l6-');
     const PL = store.init(tmpRoot);
     try {
       await store.saveData(store.emptyData());
@@ -1121,8 +1151,8 @@ async function main() {
   // record of when someone wrote in their diary, and unlike an mtime it survives
   // being copied. Encryption does not hide a filename.
   await test('L12: scheduled backup filenames carry no timestamp, and still prune', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l12-'));
-    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l12-dest-'));
+    const tmpRoot = tempRoot('flint-l12-');
+    const dest = tempRoot('flint-l12-dest-');
     store.init(tmpRoot);
     try {
       const d = store.emptyData();
@@ -1166,7 +1196,7 @@ async function main() {
   // untouched, so keeping them left readable photographs beside an encrypted
   // journal with nothing to ever remove them. Nothing sweeps .rekey by name.
   await test('turning encryption off never leaves a decrypted photo sidecar behind', async () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-sidecar-'));
+    const tmpRoot = tempRoot('flint-sidecar-');
     const PS2 = store.init(tmpRoot);
     try {
       await store.saveData(store.emptyData());
@@ -1205,7 +1235,7 @@ async function main() {
   });
 
   await test('H5: a PIN change that fails partway leaves every photo readable', async () => {
-    const rootR = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-h5-'));
+    const rootR = tempRoot('flint-h5-');
     const PR = store.init(rootR);
     try {
       await store.saveData(store.emptyData());
@@ -1267,7 +1297,7 @@ async function main() {
   });
 
   await test('L7: addMedia checks the file itself, not just its name', async () => {
-    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-l7-'));
+    const rootA = tempRoot('flint-l7-');
     store.init(rootA);
     try {
       await store.saveData(store.emptyData());
@@ -1386,7 +1416,7 @@ async function main() {
     // away at the end, so a photo still encrypted after this is gone for good,
     // and a sidecar left behind is a DECRYPTED photo sitting next to a journal
     // that no longer has anything to clean it up. Neither had a test.
-    const rootD = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-m3-'));
+    const rootD = tempRoot('flint-m3-');
     const PD = store.init(rootD);
     try {
       await store.saveData(store.emptyData());
@@ -1442,7 +1472,7 @@ async function main() {
   });
 
   await test('enableEncryption sweeps a readable copy left beside the journal, keeps an encrypted one', async () => {
-    const rootS = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-sweep-'));
+    const rootS = tempRoot('flint-sweep-');
     const PS = store.init(rootS);
     try {
       await store.securityStatus();
@@ -1479,7 +1509,7 @@ async function main() {
   await test('addMedia refuses to write a cleartext photo over a drifted vault', async () => {
     // Same disaster as the save guard, for attachments: a vault on disk while the
     // in-memory flag still says plaintext must never yield a readable image.
-    const rootM = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-media-guard-'));
+    const rootM = tempRoot('flint-media-guard-');
     const PM = store.init(rootM);
     try {
       await store.securityStatus();
@@ -1515,7 +1545,7 @@ async function main() {
 
   await test('a vault written at the old cost still opens, and upgrades on unlock', async () => {
     const nodeCrypto = require('crypto');
-    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-legacy-'));
+    const legacyRoot = tempRoot('flint-legacy-');
     const PL = store.init(legacyRoot);
     try {
       const enc = (k, buf) => {
@@ -1554,7 +1584,7 @@ async function main() {
   });
 
   await test('finishing onboarding stamps startedOn once and never overwrites it', async () => {
-    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-started-'));
+    const r = tempRoot('flint-started-');
     store.init(r);
     try {
       assert.strictEqual((await store.getStartedOn()).startedOn, '', 'blank before onboarding');
@@ -1619,7 +1649,7 @@ async function main() {
   });
 
   await test('resetAll wipes entries, backups and settings back to brand new', async () => {
-    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-reset-'));
+    const r = tempRoot('flint-reset-');
     const PR = store.init(r);
     try {
       const d = store.emptyData();

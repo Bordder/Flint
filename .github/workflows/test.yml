@@ -2,18 +2,37 @@ name: test
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Set here rather than left to the repository setting. The repo-wide "Workflow
+# permissions" dropdown is invisible from the code, easy to forget, and applies
+# to every workflow at once; this block is version-controlled and shows up in a
+# diff. Nothing in this job needs to write, so nothing in it may.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Nothing after checkout contacts the remote, so the job has no reason
+          # to leave a credential sitting in .git/config.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # The data-layer tests are pure Node, so skip downloading the Electron binary.
-      - run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      # The data-layer tests are pure Node: the suite requires only builtins
+      # plus store.js and shared/, so nothing has to be built or fetched to run
+      # them. --ignore-scripts keeps third-party install hooks off the runner.
+      # Do NOT copy that flag to a packaging job: electron-winstaller is the one
+      # dependency with an install script, and packaging needs it to run.
+      - run: npm ci --ignore-scripts
       - run: npm test

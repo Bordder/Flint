@@ -49,7 +49,13 @@ Before you publish, make sure the build is sound:
 - `npm run check:mutation` passes. It breaks each guarded behaviour in a scratch copy
   and requires the suite to fail. A green suite is not the same as a suite that would
   catch a regression, and several tests here once passed on deliberately broken code.
-- `npm run check:package` passes, AFTER `npm run dist`. It inspects what actually went
+- `npm run check:package` now runs automatically as the second half of `npm run dist`,
+  so the file you drag onto the release is the file that was checked. `npm run publish`
+  builds a second time to upload; that rebuild is not itself re-inspected, which is
+  fine for what this gate catches (stray files in the project folder are identical
+  across both builds) but is not a guarantee about the uploaded bytes. If you want
+  that guarantee, use the manual path: `npm run dist`, then upload from `dist\`.
+  It inspects what actually went
   into the build and refuses to publish if a username, home path, session id or dev
   folder is present. `build.files` is a denylist starting from everything on disk, so
   anything new in the project root ships by default, and `.gitignore` has no say in it.
