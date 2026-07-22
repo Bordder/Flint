@@ -11,9 +11,7 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true
-    }, "files": [
-      "**/*", "!tests/**/*", "!scripts/**/*", "!dist/**/*", "!**/*.md", "!.gitignore", "!*.bat", "!.hallmark/**/*", "!.claude/**/*", "!.github/**/*", "!.vscode/**/*", "!.idea/**/*", "!**/*.lock", "!**/.env*"
-    ], "publish": [
+    }, "files": ["main.js", "preload.js", "store.js", "crypto.js", "shared/**/*", "renderer/**/*", "assets/**/*", "package.json", "LICENSE"], "publish": [
       {
         "provider": "github", "owner": "Bordder", "repo": "Flint"
       }

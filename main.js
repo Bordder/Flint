@@ -701,12 +701,6 @@ async function renderPdf(html) {
   pdfWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   pdfWin.webContents.on('will-navigate', (e) => e.preventDefault());
   try {
-    // The document used to be passed as a data: URL, which Chromium caps at
-    // about 2 MB. Past that every PDF export failed with ERR_INVALID_URL, and it
-    // got worse the longer someone kept a journal, which is exactly backwards.
-    // Injecting the markup into a blank page has no size limit. A temp .html
-    // file would also work and is deliberately not used: it would leave the
-    // whole journal readable on disk beside an encrypted one.
     // The whole document used to travel as a data: URL, which Chromium caps at
     // about 2 MB, so every export failed once a journal grew past it, and got
     // worse the longer someone wrote. Only the HEAD travels that way now (the
