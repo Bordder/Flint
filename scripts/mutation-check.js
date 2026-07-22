@@ -54,7 +54,34 @@ const MUTANTS = [
   { id: 'M-4 a photo-only day still counts as written', file: 'store.js',
     from: 'entryMediaCount(entry) > 0 ||', to: 'false ||' },
   { id: 'L-7 addMedia checks the bytes, not the extension', file: 'store.js',
-    from: 'if (!looksLikeType(bytes, type)) {', to: 'if (false) {' }
+    from: 'if (!looksLikeType(bytes, type)) {', to: 'if (false) {' },
+  // The settings split. Each of these turns a "we could not read it" back into a
+  // silent default or a lost key, which is the whole class of bug the split had
+  // to avoid.
+  { id: 'S-1 a locked content read refuses instead of defaulting', file: 'store.js',
+    from: "if (!sessionDk) { invalidateContentCache(); throw new ContentLocked('locked'); }",
+    to: 'if (!sessionDk) { return {}; }' },
+  { id: 'S-2 disable restores the content before the key is destroyed', file: 'store.js',
+    from: 'if (contentToRestore) {', to: 'if (false) {' },
+  { id: 'S-3 a PIN change re-keys the content', file: 'store.js',
+    from: 'try { await writeContentWith(dk, carriedContent); }',
+    to: 'try { void carriedContent; }' },
+  // Single-line anchors on purpose: a multi-line pattern here has to carry
+  // escaped newlines through several layers of quoting, and one that arrives
+  // subtly wrong reports SKIP, which is indistinguishable at a glance from a
+  // mutant that ran.
+  // Targets readContentWith, NOT loadContent. The same byte-check in loadContent
+  // is belt-and-braces: reconcileContentFile reseals a mismatched file on unlock,
+  // so by the time loadContent runs the form and the flag agree, and a mutant
+  // there survives every test. readContentWith is the one that must branch on the
+  // bytes, because enable and disable call it with an explicit key while the
+  // flags still describe the OLD state.
+  { id: 'S-4 the key-specific reader branches on the file magic', file: 'store.js',
+    occurrence: 1, from: 'if (!isEncryptedContent(buf)) {', to: 'if (false) {' },
+  { id: 'S-5 migration strips the words out of settings.json', file: 'store.js',
+    occurrence: 1, from: 'for (const k of CONTENT_KEYS) delete s[k];', to: '' },
+  { id: 'S-6 dropping the key drops the decrypted content cache', file: 'store.js',
+    from: '  // comes through here, so this is the one place it has to happen.', to: '  return;' }
   // NOT listed: the stat-size check in addMedia. Removing it leaves behaviour
   // identical, because the post-read check refuses the same file: what it costs
   // is reading a huge file into memory first. That is a real property but not an

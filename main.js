@@ -601,8 +601,13 @@ function todayISO() {
 
 async function exportContext() {
   const { data } = await store.loadData();
-  const [questions, titles] = await Promise.all([store.loadQuestions(), store.knownTitles()]);
-  return { data, questions, knownTitles: titles };
+  const [q, t] = await Promise.all([store.loadQuestions(), store.knownTitles()]);
+  // Refuse rather than export with built-in labels. Falling back here would put
+  // a document on disk whose prompt headings are not the ones the person wrote,
+  // which is worse than no export at all: it looks finished and is wrong.
+  if (!q.ok) throw new Error(q.error);
+  if (!t.ok) throw new Error(t.error);
+  return { data, questions: q.questions, knownTitles: t.titles };
 }
 
 ipcMain.handle('journal:export-file', async () => {
@@ -773,8 +778,10 @@ ipcMain.handle('journal:export-activities-pdf', async () => {
 
 ipcMain.handle('questions:get', async () => {
   try {
-    const [questions, titles] = await Promise.all([store.loadQuestions(), store.knownTitles()]);
-    return { ok: true, questions, knownTitles: titles };
+    const [q, t] = await Promise.all([store.loadQuestions(), store.knownTitles()]);
+    if (!q.ok) return { ok: false, reason: q.reason, error: q.error };
+    if (!t.ok) return { ok: false, reason: t.reason, error: t.error };
+    return { ok: true, questions: q.questions, knownTitles: t.titles, defaulted: q.defaulted };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -791,9 +798,14 @@ ipcMain.handle('questions:set', async (_e, list) => {
 
 ipcMain.handle('templates:get', async () => {
   try {
-    return { ok: true, templates: await store.loadTemplates() };
+    const r = await store.loadTemplates();
+    // No empty array on the failure branch. Handing back [] beside ok:false is
+    // the same collapse this change exists to remove: the caller reads the list
+    // and never looks at ok.
+    if (!r.ok) return { ok: false, reason: r.reason, error: r.error };
+    return { ok: true, templates: r.templates, defaulted: r.defaulted };
   } catch (err) {
-    return { ok: false, templates: [], error: err.message };
+    return { ok: false, error: err.message };
   }
 });
 
@@ -807,9 +819,11 @@ ipcMain.handle('templates:set', async (_e, list) => {
 
 ipcMain.handle('activities:get', async () => {
   try {
-    return { ok: true, activities: await store.loadActivities() };
+    const r = await store.loadActivities();
+    if (!r.ok) return { ok: false, reason: r.reason, error: r.error };
+    return { ok: true, activities: r.activities, defaulted: r.defaulted };
   } catch (err) {
-    return { ok: false, activities: [], error: err.message };
+    return { ok: false, error: err.message };
   }
 });
 

@@ -57,6 +57,11 @@ function setSessionDk(dk) {
 function clearSessionDk() {
   if (sessionDk) sessionDk.fill(0);
   sessionDk = null;
+  // The content cache holds the user's prompts and templates DECRYPTED. Leaving
+  // it behind when the key goes would mean a locked journal still handing them
+  // out, which is the whole thing the lock is for. Every path that drops the key
+  // comes through here, so this is the one place it has to happen.
+  invalidateContentCache();
 }
 
 const BACKUPS_TO_KEEP = 30;
@@ -68,10 +73,11 @@ let P = null;
 
 function init(rootDir) {
   P = {
-    root: rootDir, dataDir: path.join(rootDir, 'data'), dataFile: path.join(rootDir, 'data', 'entries.json'), backupsDir: path.join(rootDir, 'data', 'backups'), mediaDir: path.join(rootDir, 'data', 'media'), settingsFile: path.join(rootDir, 'data', 'settings.json')
+    root: rootDir, dataDir: path.join(rootDir, 'data'), dataFile: path.join(rootDir, 'data', 'entries.json'), backupsDir: path.join(rootDir, 'data', 'backups'), mediaDir: path.join(rootDir, 'data', 'media'), settingsFile: path.join(rootDir, 'data', 'settings.json'), contentFile: path.join(rootDir, 'data', 'content.json')
   };
   fs.mkdirSync(P.backupsDir, { recursive: true });
   invalidateSettingsCache(); // a new root means the cached settings belong to the old one
+  invalidateContentCache();
   // A different data root is a different journal, so nothing we learned about the
   // last one applies to it. Carrying a data key, a cached vault or an "encrypted"
   // belief across the switch is how a save ends up resealing one journal with
@@ -584,22 +590,41 @@ function normaliseQuestions(list) {
   return cleaned.length ? cleaned : null;
 }
 
+// The four content getters all answer the same three-way question, and the
+// distinction matters more than it looks. "Absent" means a fresh install, and a
+// built-in default is the truth. "Locked" and "unreadable" are NOT that: they
+// mean real words exist that we cannot see just now, and answering those with
+// defaults is exactly how a caller ends up saving the defaults over them. So a
+// failure comes back as ok:false carrying NO list at all, and `defaulted` marks
+// the only case where writing the answer back is safe.
+function contentFailure(err) {
+  if (err instanceof ContentLocked) return { ok: false, reason: 'locked', error: 'Your journal is locked.' };
+  if (err instanceof ContentUnreadable) return { ok: false, reason: 'unreadable', error: `Your saved prompts and templates could not be read (${err.message}).` };
+  return null;
+}
+
 // The prompts to actually show: the user's saved set, or the built-in default.
 async function loadQuestions() {
-  const s = await loadSettingsOrDefault();
-  const saved = normaliseQuestions(s.questions);
-  return saved || DEFAULT_QUESTIONS.map((q) => ({ ...q }));
+  let c;
+  try { c = await loadContent(); }
+  catch (err) { const f = contentFailure(err); if (f) return f; throw err; }
+  const saved = normaliseQuestions(c.questions);
+  return saved
+    ? { ok: true, questions: saved, defaulted: false }
+    : { ok: true, questions: DEFAULT_QUESTIONS.map((q) => ({ ...q })), defaulted: true };
 }
 
 // A key→title map used to label answers whose prompt has since been removed.
 // The built-in defaults are always included, so their answers never fall back
 // to a generic label even if the user has never explicitly saved a prompt set.
 async function knownTitles() {
-  const s = await loadSettingsOrDefault();
+  let c;
+  try { c = await loadContent(); }
+  catch (err) { const f = contentFailure(err); if (f) return f; throw err; }
   const base = {};
   for (const q of DEFAULT_QUESTIONS) base[q.key] = q.title;
-  const saved = s.knownTitles && typeof s.knownTitles === 'object' ? s.knownTitles : {};
-  return { ...base, ...saved };
+  const saved = c.knownTitles && typeof c.knownTitles === 'object' ? c.knownTitles : {};
+  return { ok: true, titles: { ...base, ...saved }, defaulted: !Object.keys(saved).length };
 }
 
 // Keep a title only while something still needs it: a prompt currently in use,
@@ -636,19 +661,22 @@ async function saveQuestions(list) {
   if (!cleaned) {
     throw new Error('You need at least one prompt with a title.');
   }
-  const s = await loadSettings();
-  const titles = s.knownTitles && typeof s.knownTitles === 'object' ? s.knownTitles : {};
-  const outgoing = normaliseQuestions(s.questions) || DEFAULT_QUESTIONS;
+  // loadContent throws rather than defaulting, so "outgoing" below can never be
+  // DEFAULT_QUESTIONS standing in for a set we simply could not read. That
+  // mattered here more than anywhere: this function REBUILDS knownTitles from
+  // it, so a defaulted read would have retired every real title at once.
+  const c = await loadContent();
+  const titles = c.knownTitles && typeof c.knownTitles === 'object' ? c.knownTitles : {};
+  const outgoing = normaliseQuestions(c.questions) || DEFAULT_QUESTIONS;
   for (const q of outgoing) if (!titles[q.key]) titles[q.key] = q.title;
   for (const q of cleaned) titles[q.key] = q.title;
-  s.questions = cleaned;
-  // settings.json is always plain JSON, even when the journal is encrypted, and
-  // these titles are the user's own words. Keeping every title ever typed meant
-  // deleting a prompt called something private left it readable beside the
-  // encrypted journal forever. A title is only needed while an answer still
-  // uses its key, so drop the ones nothing refers to any more.
-  s.knownTitles = await pruneKnownTitles(titles, cleaned);
-  await saveSettings(s);
+  c.questions = cleaned;
+  // These titles are the user's own words. A title is only needed while an
+  // answer still uses its key, so drop the ones nothing refers to any more:
+  // fewer of them kept is less to protect. They are encrypted with the journal
+  // now, but pruning is still right, and it keeps this file small.
+  c.knownTitles = await pruneKnownTitles(titles, cleaned);
+  await saveContent(c);
   return cleaned;
 }
 
@@ -668,16 +696,21 @@ function normaliseTemplates(list) {
 }
 
 async function loadTemplates() {
-  const s = await loadSettingsOrDefault();
-  return normaliseTemplates(s.templates) || DEFAULT_TEMPLATES.map((t) => ({ ...t }));
+  let c;
+  try { c = await loadContent(); }
+  catch (err) { const f = contentFailure(err); if (f) return f; throw err; }
+  const saved = normaliseTemplates(c.templates);
+  return saved
+    ? { ok: true, templates: saved, defaulted: false }
+    : { ok: true, templates: DEFAULT_TEMPLATES.map((t) => ({ ...t })), defaulted: true };
 }
 
 async function saveTemplates(list) {
   const cleaned = normaliseTemplates(list);
   if (!cleaned) throw new Error('You need at least one template with a name.');
-  const s = await loadSettings();
-  s.templates = cleaned;
-  await saveSettings(s);
+  const c = await loadContent();
+  c.templates = cleaned;
+  await saveContent(c);
   return cleaned;
 }
 
@@ -703,16 +736,23 @@ function normaliseActivities(list) {
 }
 
 async function loadActivities() {
-  const s = await loadSettingsOrDefault();
-  return normaliseActivities(s.activities) || DEFAULT_ACTIVITIES.slice();
+  let c;
+  try { c = await loadContent(); }
+  catch (err) { const f = contentFailure(err); if (f) return f; throw err; }
+  const saved = normaliseActivities(c.activities);
+  return saved
+    ? { ok: true, activities: saved, defaulted: false }
+    : { ok: true, activities: DEFAULT_ACTIVITIES.slice(), defaulted: true };
 }
 
 async function saveActivities(list) {
   const cleaned = normaliseActivities(list);
   if (!cleaned) throw new Error('You need at least one activity.');
-  const s = await loadSettings();
-  s.activities = cleaned;
-  await saveSettings(s);
+  // loadContent THROWS on locked or unreadable, so there is no route from here
+  // to a write that did not first prove it could read what it replaces.
+  const c = await loadContent();
+  c.activities = cleaned;
+  await saveContent(c);
   return cleaned;
 }
 
@@ -1670,6 +1710,182 @@ function invalidateSettingsCache() { settingsCache = null; settingsStamp = ''; }
 // else leaves the cache alone and is reported, so a caller can refuse to write.
 class SettingsUnreadable extends Error {}
 
+// ------------------------------------------------------- the content file
+//
+// settings.json used to hold the user's own words as well as their preferences:
+// prompt titles and hints, activity names, and entry templates, whose bodies run
+// to 4000 characters and are simply diary prose. All of it stayed in plain JSON
+// while encryption was on, so a journal locked behind a PIN sat next to a
+// readable file full of the same person's writing.
+//
+// Those four fields now live in content.json, encrypted under the SAME data key
+// as the journal. Everything left in settings.json is either needed before any
+// key exists (hardwareAcceleration, read synchronously before the first window)
+// or needed for recovery (the legacy window-PIN hash), or reveals nothing.
+//
+// The file is deliberately NOT a vault: createVault mints its own data key with
+// its own PIN and recovery wraps, which would mean two independent secrets for
+// one journal and a second re-wrap on every PIN change. It uses the same raw
+// blob format as photo attachments, under the journal's key.
+const CONTENT_MAGIC = Buffer.from('FLINTSET1');
+const CONTENT_KEYS = ['templates', 'questions', 'knownTitles', 'activities'];
+
+// Two failures the callers must be able to tell apart, and neither may ever be
+// answered with defaults: see the comment on the getters below.
+class ContentUnreadable extends Error {}
+class ContentLocked extends Error {}
+
+let contentCache = null;
+let contentStamp = '';
+function invalidateContentCache() { contentCache = null; contentStamp = ''; }
+
+function contentPath() { return P.contentFile; }
+function isEncryptedContent(buf) {
+  return buf.length > CONTENT_MAGIC.length && buf.subarray(0, CONTENT_MAGIC.length).equals(CONTENT_MAGIC);
+}
+
+// Reads the file and returns its four fields, or {} if it genuinely does not
+// exist yet. THROWS on locked or unreadable rather than returning a default,
+// because the setters below load-modify-save: a {} here would be written back
+// over the real file and take the user's templates with it.
+//
+// Which form the file is in is decided by its FIRST BYTES, never by the
+// encryptedOnDisk flag. That way a plaintext content file left by an
+// interrupted enable is still readable, and the two files can drift without
+// either becoming unreachable.
+async function loadContent() {
+  let stamp = '';
+  try {
+    const st = await fsp.stat(contentPath());
+    stamp = `${st.mtimeMs}:${st.size}`;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw new ContentUnreadable(err.code || err.message);
+    // No content file: either a fresh install, or a journal written before the
+    // split. Fall back to settings.json, which is what makes the migration lazy
+    // and makes every interrupted state resolve towards keeping the words.
+    return await migrateContentFromSettings();
+  }
+  if (contentCache && stamp === contentStamp) return contentCache;
+
+  let buf;
+  try { buf = await fsp.readFile(contentPath()); }
+  catch (err) {
+    if (err && err.code === 'ENOENT') return await migrateContentFromSettings();
+    invalidateContentCache();
+    throw new ContentUnreadable(err && (err.code || err.message));
+  }
+
+  let text;
+  if (isEncryptedContent(buf)) {
+    if (!sessionDk) { invalidateContentCache(); throw new ContentLocked('locked'); }
+    try { text = vaultCrypto.decryptBuffer(sessionDk, buf.subarray(CONTENT_MAGIC.length)).toString('utf8'); }
+    catch (err) { invalidateContentCache(); throw new ContentUnreadable('could not be decrypted'); }
+  } else {
+    text = buf.toString('utf8');
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (err) { invalidateContentCache(); throw new ContentUnreadable('could not be read'); }
+
+  contentCache = parsed && typeof parsed === 'object' ? parsed : {};
+  contentStamp = stamp;
+  return contentCache;
+}
+
+// Writes the four fields, encrypting whenever the journal on disk is a vault.
+// Refuses when the journal is encrypted and no key is held: a session that
+// could not have READ this file must never be allowed to replace it.
+async function saveContent(content) {
+  if (!content || typeof content !== 'object') throw new Error('Refusing to write content that is not an object.');
+  const body = { flintContent: 1 };
+  for (const k of CONTENT_KEYS) if (content[k] !== undefined) body[k] = content[k];
+  const json = JSON.stringify(body, null, 2);
+
+  if (encryptedOnDisk) {
+    if (!sessionDk) throw new ContentLocked('locked');
+    const blob = Buffer.concat([CONTENT_MAGIC, vaultCrypto.encryptBuffer(sessionDk, Buffer.from(json, 'utf8'))]);
+    await writeFileAtomicRaw(contentPath(), blob);
+  } else {
+    await writeFileAtomic(contentPath(), json);
+  }
+  contentCache = body;
+  try {
+    const st = await fsp.stat(contentPath());
+    contentStamp = `${st.mtimeMs}:${st.size}`;
+  } catch { contentStamp = ''; }
+  return body;
+}
+
+// Reads the content file under a SPECIFIC key rather than the session one.
+// The lifecycle paths need this: disable holds a key it has just derived and has
+// not installed, and a PIN change holds two at once. Returns {} when the file is
+// absent, throws when it exists and will not open.
+async function readContentWith(dk) {
+  let buf;
+  try { buf = await fsp.readFile(contentPath()); }
+  catch (err) {
+    if (err && err.code === 'ENOENT') {
+      // Nothing split out yet: carry whatever settings.json still holds, so a
+      // journal encrypted before this version does not lose its templates.
+      const s = await loadSettings().catch(() => ({}));
+      const carried = {};
+      for (const k of CONTENT_KEYS) if (s[k] !== undefined) carried[k] = s[k];
+      return carried;
+    }
+    throw new ContentUnreadable(err.code || err.message);
+  }
+  if (!isEncryptedContent(buf)) {
+    try { return JSON.parse(buf.toString('utf8')); }
+    catch { throw new ContentUnreadable('could not be read'); }
+  }
+  try {
+    return JSON.parse(vaultCrypto.decryptBuffer(dk, buf.subarray(CONTENT_MAGIC.length)).toString('utf8'));
+  } catch { throw new ContentUnreadable('could not be decrypted'); }
+}
+
+// Writes the content file under a SPECIFIC key, encrypted. Used by the enable
+// and rekey paths, which know the key before it becomes the session key.
+async function writeContentWith(dk, content) {
+  const body = { flintContent: 1 };
+  for (const k of CONTENT_KEYS) if (content[k] !== undefined) body[k] = content[k];
+  const blob = Buffer.concat([CONTENT_MAGIC,
+    vaultCrypto.encryptBuffer(dk, Buffer.from(JSON.stringify(body, null, 2), 'utf8'))]);
+  await writeFileAtomicRaw(contentPath(), blob);
+  invalidateContentCache();
+  return body;
+}
+
+// Migration stage A, needs no key. Moves the four fields out of settings.json
+// the first time anything asks for them. The content file is written and read
+// back BEFORE settings is stripped, never the other way round: a crash between
+// the two leaves both copies, and the next run sees content.json and re-strips.
+async function migrateContentFromSettings() {
+  let s;
+  try { s = await loadSettings(); }
+  catch (err) {
+    // Settings unreadable is not the same as content absent. Refuse rather than
+    // hand back {} that a setter would then write as the whole truth.
+    if (err instanceof SettingsUnreadable) throw new ContentUnreadable(err.message);
+    throw err;
+  }
+  const carried = {};
+  for (const k of CONTENT_KEYS) if (s[k] !== undefined) carried[k] = s[k];
+  if (!Object.keys(carried).length) {
+    contentCache = {};
+    contentStamp = '';
+    return contentCache;
+  }
+  const written = await saveContent(carried);
+  // Only strip once the new file is on disk and readable.
+  const check = await fsp.readFile(contentPath()).catch(() => null);
+  if (check) {
+    for (const k of CONTENT_KEYS) delete s[k];
+    try { await saveSettings(s); } catch { /* the content file already holds them; retried next time */ }
+  }
+  return written;
+}
+
 async function loadSettings() {
   let stamp = '';
   try {
@@ -1856,7 +2072,45 @@ async function unlock(pin) {
   const opened = await openVaultWith(s.vault, () => vaultCrypto.openWithPin(s.vault, pin), 'PIN');
   if (!opened.ok) return opened;
   await upgradeWrapCost(pin);
+  await reconcileContentFile();
   return { ok: true };
+}
+
+// Brings content.json into line with the journal, and picks up anything an
+// interrupted run left behind. Safe to call whenever a key has just been
+// installed; a no-op in the normal case.
+//
+// Every state it can find resolves towards KEEPING the words. None of them
+// resolves by writing defaults, which is the property that matters: a wrong
+// guess here silently replaces someone's templates with the built-in ones.
+async function reconcileContentFile() {
+  if (!encryptedOnDisk || !sessionDk) return;
+  let buf = null;
+  try { buf = await fsp.readFile(contentPath()); }
+  catch (err) {
+    if (!err || err.code !== 'ENOENT') return;
+    // No content file, but settings.json may still hold the four fields from a
+    // version before the split. Seal them now.
+    const s = await loadSettings().catch(() => null);
+    if (!s) return;
+    const carried = {};
+    for (const k of CONTENT_KEYS) if (s[k] !== undefined) carried[k] = s[k];
+    if (!Object.keys(carried).length) return;
+    try {
+      await writeContentWith(sessionDk, carried);
+      for (const k of CONTENT_KEYS) delete s[k];
+      await saveSettings(s);
+    } catch { /* retried on the next unlock */ }
+    return;
+  }
+  // A plaintext content file beside an encrypted journal: either the enable-time
+  // seal failed, or this journal predates the split. Seal it.
+  if (!isEncryptedContent(buf)) {
+    let parsed = null;
+    try { parsed = JSON.parse(buf.toString('utf8')); } catch { return; }
+    if (!parsed || typeof parsed !== 'object') return;
+    try { await writeContentWith(sessionDk, parsed); } catch { /* next time */ }
+  }
 }
 
 // Shared by the PIN and recovery paths. Splits "your secret is wrong" from "the
@@ -2053,16 +2307,32 @@ function enableEncryption(pin) {
         return { ok: false, error: `Encryption was not turned on, and nothing was changed. Your journal is showing no entries, but Flint can still see ${rescue} on disk, so it will not encrypt an empty journal and remove them. Please reopen Flint and check your days are showing first.` };
       }
     }
+    // Read the prompts and templates while everything is still plaintext, so
+    // they can be rewritten sealed once the vault is committed. Read BEFORE the
+    // commit so a failure here changes nothing.
+    let contentToSeal = null;
+    try { contentToSeal = await readContentWith(null); }
+    catch (err) {
+      return { ok: false, error: 'Encryption was not turned on, and nothing was changed, because the file holding your prompts and templates could not be read.' };
+    }
+
     const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, pin);
     await writeMainAndBackup(JSON.stringify(vault, null, 2));
     setSessionDk(dk);
     sessionVault = vault;
     encryptedOnDisk = encryptedEverThisSession = true;
+    // The vault is committed, so this is tidying: a failure here leaves the
+    // prompts readable but loses nothing, and reconcileContentFile retries it on
+    // the next unlock. It is reported rather than swallowed.
+    let contentSealed = true;
+    try { await writeContentWith(dk, contentToSeal || {}); }
+    catch { contentSealed = false; }
 
     // Everything past this point is tidying, and the vault is already committed.
     // If any of it throws, the recovery code would be lost forever while the
     // journal stayed encrypted, so nothing here is allowed to be fatal.
     const leftovers = [];
+    if (!contentSealed) leftovers.push('your prompts and templates could not be encrypted');
     try {
       // The vault is already committed above, so the new-key copies are safe to
       // move in immediately. Anything that would not convert is reported.
@@ -2117,6 +2387,22 @@ function disableEncryption(pin, opts = {}) {
     // Photos first and in two phases, because the key disappears at the end of
     // this function: a photo still encrypted after that is lost. Phase one
     // touches no original, so giving up here really does change nothing.
+    // The prompts and templates have to come back to plaintext BEFORE the key
+    // is cleared at the end of this function, for exactly the reason the photos
+    // do: afterwards the vault and its wraps are gone and nothing can re-derive
+    // the key, so anything still encrypted is lost for good. Read it here, while
+    // the key is certainly held, and refuse the whole operation if it will not
+    // decrypt rather than turning encryption off on top of it.
+    let contentToRestore = null;
+    try {
+      contentToRestore = await readContentWith(dk);
+    } catch (err) {
+      return {
+        ok: false,
+        error: 'Your PIN is correct, but the file holding your prompts and templates could not be read, so encryption was left on and nothing was changed.'
+      };
+    }
+
     const { prepared, failed } = await rewriteMediaPrepare(dk, false);
     const { transient, damaged } = splitFailures(failed);
     if (transient.length) {
@@ -2151,9 +2437,15 @@ function disableEncryption(pin, opts = {}) {
       };
     }
     await writeMainAndBackup(JSON.stringify(data, null, 2));
+    // encryptedOnDisk is still true here, so flip it FIRST: saveContent decides
+    // which form to write from that flag, and we want the plaintext branch.
+    encryptedOnDisk = false;
+    if (contentToRestore) {
+      try { await saveContent(contentToRestore); }
+      catch { /* the words are still in the encrypted file; reconcile retries */ }
+    }
     clearSessionDk();
     sessionVault = null;
-    encryptedOnDisk = false;
     // A deliberate turn-off is the only thing allowed to clear the sticky flag,
     // otherwise plaintext saves would be refused for the rest of the session.
     encryptedEverThisSession = false;
@@ -2279,6 +2571,19 @@ async function rekeyBackups(oldDk, newDk, newVault) {
 // open nothing that still exists.
 async function rotateToNewKey(data, oldDk, newPin, opts = {}) {
   const { vault, recoveryCode, dk } = await vaultCrypto.createVault(data, newPin);
+  // Prove the prompts and templates open under the OLD key BEFORE anything is
+  // written under the new one. After the vault below is committed the old key
+  // exists nowhere, so a content file that only it can open would be stranded
+  // exactly the way photos used to be.
+  let carriedContent;
+  try {
+    carriedContent = await readContentWith(oldDk);
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'Nothing was changed, because the file holding your prompts and templates could not be read. Your PIN is unchanged.'
+    };
+  }
   const { prepared, failed } = await rekeyMediaPrepare(oldDk, dk);
   const { transient, damaged } = splitFailures(failed);
   if (transient.length) {
@@ -2304,6 +2609,10 @@ async function rotateToNewKey(data, oldDk, newPin, opts = {}) {
   // new-key photos are readable. Doing it the other way round is what stranded
   // them.
   await writeMainAndBackup(JSON.stringify(vault, null, 2));
+  // Straight after the vault, and before the session key changes: from here on
+  // the new key is the only one that exists.
+  try { await writeContentWith(dk, carriedContent); }
+  catch { /* reconcileContentFile re-runs this on the next unlock */ }
   const stuck = await mediaSidecarCommit(prepared);
   const removed = await rekeyBackups(oldDk, dk, vault);
   setSessionDk(dk);
@@ -2398,6 +2707,7 @@ function resetAll() {
     encryptedOnDisk = false;
     encryptedEverThisSession = false; // starting over from a blank install
     invalidateSettingsCache(); // settings.json is about to be deleted underneath the cache
+    invalidateContentCache();  // and content.json with it
     try {
       await fsp.rm(P.dataDir, { recursive: true, force: true });
     } catch (err) {
@@ -2453,7 +2763,8 @@ async function removeBackedUpMedia(dir) {
 }
 
 module.exports = {
-  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, readBackgroundPrefsStrict, getStartWithWindows, setStartWithWindows, getTrayAsked, setTrayAsked, getTrayNoticeShown, setTrayNoticeShown, getHardwareAcceleration, setHardwareAcceleration, readStartupFlagsSync, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
+  init, paths, emptyData, loadData, saveData, loadQuestions, saveQuestions, knownTitles,
+  loadContent, saveContent, reconcileContentFile, ContentLocked, ContentUnreadable, loadTemplates, saveTemplates, loadActivities, saveActivities, addMedia, getMedia, removeMedia, getTheme, setTheme, getCustomTheme, setCustomTheme, setThemePresets, getRunInBackground, setRunInBackground, readBackgroundPrefsStrict, getStartWithWindows, setStartWithWindows, getTrayAsked, setTrayAsked, getTrayNoticeShown, setTrayNoticeShown, getHardwareAcceleration, setHardwareAcceleration, readStartupFlagsSync, getOnboarded, setOnboarded, getStartedOn, getAutoLockMinutes, setAutoLockMinutes, getAutosaveSeconds, setAutosaveSeconds, getDaysOff, setDaysOff, getReminder, setReminder, getBackupSettings, setBackupSettings, setBackupFolder, runScheduledBackup, getGuided, setGuided, getUpdateChecks, setUpdateChecks, buildExportText, buildExportHtml, buildExportMarkdown, buildActivityReport, buildActivityReportHtml, mergeImported, pinIsSet, setPin, verifyPin, removePin,
   securityStatus, unlock, unlockWithRecovery, lock, enableEncryption, disableEncryption, changeEncryptionPin, resetSecretsAfterRecovery, checkEncryptionPin, resetAll,
   BACKUPS_TO_KEEP, DEFAULT_QUESTIONS
 };

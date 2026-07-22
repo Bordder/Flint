@@ -154,7 +154,8 @@ C:\Users\<your Windows username>\AppData\Roaming\Flint\data
 | --------------- | ----------------------------------------------------------------- |
 | `entries.json`  | Your whole journal, every day. Plain readable text, or an encrypted vault if you turn encryption on |
 | `backups\`      | A dated copy from your recent saves, the newest 30 kept (encrypted too, when encryption is on)      |
-| `settings.json` | Your preferences: prompts and templates, theme and colours, reminder and backup choices, your update-check choice, streak days off, autosave and auto-lock timings, and the optional legacy window PIN |
+| `settings.json` | Your preferences: theme and colours, reminder and backup choices, your update-check choice, streak days off, autosave and auto-lock timings, and the optional legacy window PIN. No writing of yours is in here |
+| `content.json`  | Your own words that are not diary entries: prompt titles and hints, entry templates, and activity names. Encrypted along with your journal when encryption is on |
 | `media\`        | Only if you attached photos in an older version. New photos can no longer be added, but any you have are kept (encrypted too, when encryption is on) |
 
 This folder is in AppData deliberately: OneDrive and other sync tools don't touch
@@ -203,9 +204,9 @@ From then on:
 There is also an older, lighter **window PIN** that only hides the app window without
 encrypting anything. If you have one set (and haven't turned on encryption), a
 forgotten one is cleared by closing Flint, deleting `settings.json` in the data
-folder, and reopening; this also resets your other preferences (themes, prompts,
-reminders and so on) but never your entries in `entries.json`. Turning on encryption
-replaces the window PIN.
+folder, and reopening; this resets preferences like themes and reminders, but never
+your entries in `entries.json`, and no longer your prompts, templates or activities
+either, which live in `content.json`. Turning on encryption replaces the window PIN.
 
 ## Moving to a new computer
 

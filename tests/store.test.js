@@ -365,8 +365,12 @@ async function main() {
   });
 
   await test('prompts default, then save + normalise (dedupe keys, drop blank, keep titles)', async () => {
+    // The getters answer {ok, questions, defaulted} now, so that "we could not
+    // read your prompts" can never arrive looking like "you have none".
     const def = await store.loadQuestions();
-    assert.ok(def.length >= 1 && def[0].key, 'defaults load when none saved');
+    assert.strictEqual(def.ok, true, 'readable');
+    assert.strictEqual(def.defaulted, true, 'and marked as the built-in set');
+    assert.ok(def.questions.length >= 1 && def.questions[0].key, 'defaults load when none saved');
 
     const saved = await store.saveQuestions([
       { key: 'work', title: 'Work', hint: 'How was work?' }, { key: 'work', title: 'Duplicate key', hint: '' }, // clashing key gets regenerated
@@ -378,10 +382,12 @@ async function main() {
     assert.ok(keys.every((k) => k && !k.startsWith('__') && k !== 'updatedAt'), 'no reserved keys');
 
     const reloaded = await store.loadQuestions();
-    assert.deepStrictEqual(reloaded, saved, 'saved prompts persist');
+    assert.strictEqual(reloaded.defaulted, false, 'no longer the built-in set');
+    assert.deepStrictEqual(reloaded.questions, saved, 'saved prompts persist');
 
     const titles = await store.knownTitles();
-    assert.strictEqual(titles.work, 'Work', 'known titles recorded for later orphan labelling');
+    assert.strictEqual(titles.ok, true);
+    assert.strictEqual(titles.titles.work, 'Work', 'known titles recorded for later orphan labelling');
   });
 
   await test('saveQuestions refuses an all-blank list', async () => {
@@ -392,12 +398,12 @@ async function main() {
   await test('removing a default prompt still labels its old answers by title', async () => {
     // save a set that does NOT include the default "challenge" prompt
     await store.saveQuestions([{ key: 'highlight', title: 'A good moment' }]);
-    const titles = await store.knownTitles();
+    const titles = (await store.knownTitles()).titles;
     assert.strictEqual(titles.challenge, 'Something hard', 'default title still resolvable');
 
     const data = store.emptyData();
     data.entries['2026-08-01'] = { challenge: 'A rough afternoon, but I got through it.', updatedAt: 'x' };
-    const questions = await store.loadQuestions();
+    const questions = (await store.loadQuestions()).questions;
     const text = store.buildExportText(data, { questions, knownTitles: titles });
     assert.match(text, /Something hard/);
     assert.match(text, /rough afternoon/);
@@ -525,10 +531,10 @@ async function main() {
 
   await test('activities default, then save + normalise (trim, dedupe, drop blank)', async () => {
     const def = await store.loadActivities();
-    assert.ok(Array.isArray(def) && def.length > 0, 'has a default set');
+    assert.ok(def.ok && Array.isArray(def.activities) && def.activities.length > 0, 'has a default set');
     const saved = await store.saveActivities(['  Rest  ', 'Rest', 'Walk', '', '   ']);
     assert.deepStrictEqual(saved, ['Rest', 'Walk'], 'trims, dedupes case-insensitively, drops blanks');
-    assert.deepStrictEqual(await store.loadActivities(), ['Rest', 'Walk']);
+    assert.deepStrictEqual((await store.loadActivities()).activities, ['Rest', 'Walk']);
     await assert.rejects(() => store.saveActivities(['', '  ']), /at least one activity/i);
   });
 
@@ -1338,6 +1344,230 @@ async function main() {
       const big = path.join(rootA, 'huge.png');
       fs.writeFileSync(big, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(21 * 1024 * 1024)]));
       assert.match((await store.addMedia(big)).error, /bigger than 20 MB/i, 'oversize refused');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('S1: prompts and templates are encrypted with the journal, and survive the round trip', async () => {
+    const rootS = tempRoot('flint-split-');
+    const PSP = store.init(rootS);
+    try {
+      await store.saveData(store.emptyData());
+      const PRIVATE = 'The appointment on Thursday, and what I want to say';
+      await store.saveTemplates([{ name: 'Thursday', body: PRIVATE }]);
+      await store.saveQuestions([{ key: 'mood', title: 'A private prompt title' }]);
+      await store.saveActivities(['Something personal']);
+
+      // Plaintext to begin with, and the words really are in the file.
+      const before = fs.readFileSync(PSP.contentFile, 'utf8');
+      assert.ok(before.includes(PRIVATE), 'plaintext while encryption is off');
+      const settingsText = fs.existsSync(PSP.settingsFile) ? fs.readFileSync(PSP.settingsFile, 'utf8') : '';
+      assert.ok(!settingsText.includes(PRIVATE), 'and NOT left behind in settings.json');
+
+      assert.ok((await store.enableEncryption('splitpin12')).ok, 'encrypted');
+
+      // The actual promise: the words are no longer readable on disk.
+      const sealed = fs.readFileSync(PSP.contentFile);
+      assert.ok(!sealed.toString('utf8').includes(PRIVATE), 'the template body is not readable on disk');
+      assert.ok(!sealed.toString('utf8').includes('A private prompt title'), 'nor is the prompt title');
+      assert.strictEqual(sealed.subarray(0, 9).toString('latin1'), 'FLINTSET1', 'it is the sealed form');
+
+      // And still readable through the app while unlocked.
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, PRIVATE, 'still readable unlocked');
+
+      // Locked: no words, and NO list masquerading as an empty answer.
+      store.lock();
+      for (const [name, res] of [['questions', await store.loadQuestions()],
+                                 ['templates', await store.loadTemplates()],
+                                 ['activities', await store.loadActivities()],
+                                 ['titles', await store.knownTitles()]]) {
+        assert.strictEqual(res.ok, false, `${name} refuses while locked`);
+        assert.strictEqual(res.reason, 'locked', `${name} says why`);
+        assert.ok(!res.questions && !res.templates && !res.activities && !res.titles,
+          `${name} hands back no list at all`);
+      }
+
+      // A locked write must fail rather than replace what it could not read.
+      const sealedBytes = fs.readFileSync(PSP.contentFile);
+      await assert.rejects(() => store.saveTemplates([{ name: 'X', body: 'y' }]), Error,
+        'a locked save is refused');
+      assert.ok(fs.readFileSync(PSP.contentFile).equals(sealedBytes), 'and the file is byte-identical');
+
+      assert.ok((await store.unlock('splitpin12')).ok, 'unlocked');
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, PRIVATE, 'the words came back');
+      assert.strictEqual((await store.loadQuestions()).questions[0].title, 'A private prompt title');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  await test('S2: a PIN change re-keys the content, and turning encryption off returns it readable', async () => {
+    const rootT = tempRoot('flint-split2-');
+    const PT = store.init(rootT);
+    try {
+      await store.saveData(store.emptyData());
+      const BODY = 'Words that must survive a key rotation';
+      await store.saveTemplates([{ name: 'Keep', body: BODY }]);
+      assert.ok((await store.enableEncryption('firstpin99')).ok, 'encrypted');
+
+      // Change the PIN: the data key rotates, so the content must be rewritten
+      // under the new one or it is stranded.
+      assert.ok((await store.changeEncryptionPin('firstpin99', 'secondpin88')).ok, 'PIN changed');
+      store.lock();
+      assert.strictEqual((await store.unlock('firstpin99')).ok, false, 'old PIN is dead');
+      assert.ok((await store.unlock('secondpin88')).ok, 'new PIN works');
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, BODY,
+        'the template survived the rotation');
+      assert.ok(!fs.readFileSync(PT.contentFile).toString('utf8').includes(BODY), 'still sealed');
+
+      // Turning encryption off must hand the words back in the clear. If the key
+      // were cleared first they would be unreachable forever.
+      assert.ok((await store.disableEncryption('secondpin88')).ok, 'encryption off');
+      const plain = fs.readFileSync(PT.contentFile, 'utf8');
+      assert.ok(plain.includes(BODY), 'the template is readable again');
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, BODY, 'and loads');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  await test('S3: a journal written before the split keeps its templates, and settings.json is stripped', async () => {
+    const rootM = tempRoot('flint-split3-');
+    const PM = store.init(rootM);
+    try {
+      await store.saveData(store.emptyData());
+      // Exactly what an older version left behind: the four fields inside
+      // settings.json, and no content.json at all.
+      const LEGACY = 'A template written by an older version';
+      fs.mkdirSync(PM.dataDir, { recursive: true });
+      fs.writeFileSync(PM.settingsFile, JSON.stringify({
+        theme: 'dark',
+        hardwareAcceleration: false,
+        templates: [{ name: 'Old', body: LEGACY }],
+        activities: ['Legacy activity']
+      }, null, 2));
+      assert.ok(!fs.existsSync(PM.contentFile), 'no content file yet');
+
+      const got = await store.loadTemplates();
+      assert.strictEqual(got.templates[0].body, LEGACY, 'the old template is carried across');
+      assert.ok(fs.existsSync(PM.contentFile), 'and a content file now exists');
+
+      // The point of migrating: the words are no longer in settings.json.
+      const s = JSON.parse(fs.readFileSync(PM.settingsFile, 'utf8'));
+      assert.ok(!('templates' in s), 'templates removed from settings');
+      assert.ok(!('activities' in s), 'activities removed from settings');
+      assert.strictEqual(s.theme, 'dark', 'unrelated settings untouched');
+      assert.strictEqual(s.hardwareAcceleration, false, 'and the startup flag stays put');
+
+      // Idempotent: running again changes nothing and loses nothing.
+      const again = await store.loadTemplates();
+      assert.deepStrictEqual(again.templates, got.templates, 'second read is identical');
+
+      // The constraint that cannot break: this flag is read synchronously before
+      // any key exists, so it must still be reachable from the cleartext file.
+      assert.strictEqual(store.readStartupFlagsSync().hardwareAcceleration, false,
+        'the startup flag is still readable without a key');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('S4: deleting settings.json still clears the window PIN, but no longer costs the templates', async () => {
+    // This is the documented recovery for a forgotten window PIN. Before the
+    // split it also destroyed every template and custom prompt, because they
+    // lived in the file being deleted.
+    const rootR = tempRoot('flint-split4-');
+    const PR2 = store.init(rootR);
+    try {
+      await store.saveData(store.emptyData());
+      const KEEP = 'Should outlive the recovery step';
+      await store.saveTemplates([{ name: 'Keep', body: KEEP }]);
+      await store.setPin('4321');
+      assert.strictEqual(await store.pinIsSet(), true, 'window PIN set');
+
+      fs.unlinkSync(PR2.settingsFile);
+      store.init(rootR); // a restart, so nothing is served from cache
+
+      assert.strictEqual(await store.pinIsSet(), false, 'the window PIN is gone, as documented');
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, KEEP,
+        'and the templates survived, which they did not used to');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('S5: an unreadable content file never turns into defaults', async () => {
+    const rootU = tempRoot('flint-split5-');
+    const PU2 = store.init(rootU);
+    try {
+      await store.saveData(store.emptyData());
+      await store.saveTemplates([{ name: 'Real', body: 'real words' }]);
+
+      // Corrupt it while the journal is plaintext, so "locked" cannot be the
+      // explanation: this is specifically the unreadable case.
+      fs.writeFileSync(PU2.contentFile, '{ this is not json');
+      store.init(rootU);
+
+      for (const res of [await store.loadTemplates(), await store.loadQuestions(),
+                         await store.loadActivities(), await store.knownTitles()]) {
+        assert.strictEqual(res.ok, false, 'refused');
+        assert.strictEqual(res.reason, 'unreadable', 'and named as unreadable, not empty');
+      }
+      // And a write on top of it is refused, rather than flattening the file.
+      const before = fs.readFileSync(PU2.contentFile);
+      await assert.rejects(() => store.saveTemplates([{ name: 'X', body: 'y' }]), Error);
+      assert.ok(fs.readFileSync(PU2.contentFile).equals(before), 'the damaged file is left alone');
+    } finally {
+      store.init(root);
+    }
+  });
+
+  await test('S7: a plaintext content file beside an encrypted journal is still readable, then resealed', async () => {
+    // The state an interrupted enable leaves behind: the vault committed, but the
+    // content file never got sealed. Deciding the form from encryptedOnDisk
+    // instead of the file's own first bytes would try to decrypt plaintext here
+    // and report the templates unreadable, which is a brick, not a fallback.
+    const rootP = tempRoot('flint-split7-');
+    const PP = store.init(rootP);
+    try {
+      await store.saveData(store.emptyData());
+      const BODY = 'Written before the seal was finished';
+      await store.saveTemplates([{ name: 'Half', body: BODY }]);
+      assert.ok((await store.enableEncryption('sealpin1234')).ok, 'encrypted');
+
+      // Put the file back the way an interrupted enable would have left it.
+      fs.writeFileSync(PP.contentFile, JSON.stringify({ flintContent: 1, templates: [{ name: 'Half', body: BODY }] }, null, 2));
+      store.init(rootP);
+      assert.ok((await store.securityStatus()).encrypted, 'journal is still a vault');
+      assert.ok((await store.unlock('sealpin1234')).ok, 'unlocked');
+
+      // Readable despite the mismatch, because the form comes from the bytes.
+      assert.strictEqual((await store.loadTemplates()).templates[0].body, BODY,
+        'the plaintext content file is still readable');
+
+      // And the unlock that just ran should have resealed it.
+      const now = fs.readFileSync(PP.contentFile);
+      assert.strictEqual(now.subarray(0, 9).toString('latin1'), 'FLINTSET1',
+        'reconcile sealed it on unlock');
+      assert.ok(!now.toString('utf8').includes(BODY), 'and the words are no longer on disk in the clear');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  await test('S6: resetAll removes the content file too', async () => {
+    const rootZ = tempRoot('flint-split6-');
+    const PZ = store.init(rootZ);
+    try {
+      await store.saveData(store.emptyData());
+      await store.saveTemplates([{ name: 'Gone', body: 'after a reset' }]);
+      assert.ok(fs.existsSync(PZ.contentFile), 'content file exists');
+      await store.resetAll();
+      assert.ok(!fs.existsSync(PZ.contentFile), 'and is removed by a full reset');
     } finally {
       store.init(root);
     }

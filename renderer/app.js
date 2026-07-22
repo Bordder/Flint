@@ -8,6 +8,12 @@ const api = window.journal;
 
 let questions = (window.DEFAULT_QUESTIONS || []).map((q) => ({ ...q }));
 let knownTitles = {};
+// True when the prompts/templates/activities on screen are the built-in
+// defaults standing in for a set we could not read, rather than the person's
+// own. Saving in that state would overwrite their real ones with the defaults,
+// so every editor that writes these checks it first.
+let contentReadOnly = false;
+let contentReadError = '';
 let activityChoices = (window.DEFAULT_ACTIVITIES || []).slice(); // replaced from settings at init
 const MARKERS = window.DAY_MARKERS || [
   { key: 'good', label: 'Good day', short: 'Good' }, { key: 'mixed', label: 'Mixed day', short: 'Mixed' }, { key: 'hard', label: 'Bad day', short: 'Bad' }
@@ -1968,6 +1974,12 @@ function openLockGate(status) {
 function finishGate() {
   $('pin-gate').hidden = true;
   $('skip-link').hidden = false;
+  // Re-read the prompts, templates and activities now that a key exists. They
+  // are only fetched at boot otherwise, so after a lock and unlock the editors
+  // would still be holding whatever they had, and if THAT was the built-in
+  // defaults (because the boot read happened while locked) the next Save would
+  // write them over the person's real ones.
+  loadContentIntoUi().catch(() => { /* the read-only flag already covers it */ });
   const done = gateResolve; gateResolve = null;
   if (done) done();
 }
@@ -2650,7 +2662,40 @@ function renderPromptsEditor(announce) {
 function iconBtn(symbol, label, onClick) { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'prompt-icon'; btn.textContent = symbol; btn.setAttribute('aria-label', label); btn.addEventListener('click', onClick); return btn; }
 function movePrompt(i, delta) { const j = i + delta; if (j < 0 || j >= promptDraft.length) return; const t = promptDraft[i]; promptDraft[i] = promptDraft[j]; promptDraft[j] = t; renderPromptsEditor(); }
 function startPromptsEditor() { promptDraft = questions.map((q) => ({ key: q.key, title: q.title, hint: q.hint || '' })); renderPromptsEditor(); }
+// Fetches the three content sets and records whether what we hold is really the
+// user's. Called at boot and again after every unlock: before the split these
+// were read once at startup and never refreshed, so a lock/unlock cycle could
+// leave an editor holding defaults that the next Save wrote through.
+async function loadContentIntoUi() {
+  contentReadOnly = false;
+  contentReadError = '';
+  const qRes = await safeCall(api.getQuestions);
+  if (qRes.ok) {
+    if (Array.isArray(qRes.questions) && qRes.questions.length) questions = qRes.questions;
+    knownTitles = qRes.knownTitles || {};
+  } else if (qRes.reason === 'locked' || qRes.reason === 'unreadable') {
+    contentReadOnly = true;
+    contentReadError = qRes.error || 'Your saved prompts could not be read.';
+  }
+
+  const tRes = await safeCall(api.getTemplates);
+  if (tRes.ok && Array.isArray(tRes.templates) && tRes.templates.length) templates = tRes.templates;
+  else if (!tRes.ok) contentReadOnly = true;
+
+  const actRes = await safeCall(api.getActivities);
+  if (actRes.ok && Array.isArray(actRes.activities) && actRes.activities.length) activityChoices = actRes.activities;
+  else if (!actRes.ok) contentReadOnly = true;
+}
+
+// The one message every content editor shows when it must not save. Kept in one
+// place so the three of them cannot drift into saying different things.
+function contentBlockedMessage() {
+  return contentReadError
+    || 'Flint could not read your saved prompts and templates, so what you see here are the built-in ones. Saving now would replace yours. Unlock your journal and reopen this.';
+}
+
 async function savePrompts() {
+  if (contentReadOnly) { renderPromptsEditor(contentBlockedMessage()); return; }
   const cleaned = promptDraft.map((q) => ({ key: q.key, title: (q.title || '').trim(), hint: (q.hint || '').trim() })).filter((q) => q.title);
   if (!cleaned.length) { renderPromptsEditor('Add at least one prompt with a title before saving.'); return; }
   if (!(await guardDirty('changing your prompts'))) return;
@@ -3225,6 +3270,7 @@ function renderTemplatesEditor(announce) {
   $('templates-status').textContent = announce || '';
 }
 async function saveTemplatesEdits() {
+  if (contentReadOnly) { renderTemplatesEditor(contentBlockedMessage()); return; }
   const cleaned = tplDraft.map((t) => ({ name: (t.name || '').trim(), body: t.body || '' })).filter((t) => t.name);
   if (!cleaned.length) { renderTemplatesEditor('Add at least one template with a name before saving.'); return; }
   const res = await safeCall(api.setTemplates, cleaned);
@@ -3239,6 +3285,7 @@ function startActivitiesEditor() {
   const st = $('activities-status'); if (st) st.textContent = '';
 }
 async function saveActivitiesEdits() {
+  if (contentReadOnly) { $('activities-status').textContent = contentBlockedMessage(); return; }
   const list = $('activities-editor').value.split('\n').map((s) => s.trim()).filter(Boolean);
   if (!list.length) { $('activities-status').textContent = 'Add at least one activity before saving.'; return; }
   const res = await safeCall(api.setActivities, list);
@@ -3453,14 +3500,12 @@ async function init() {
   updateLockButton(secStatus.ok && secStatus.encrypted);
   updatePrivacyEncryptionLine(secStatus.ok && secStatus.encrypted);
 
-  const qRes = await safeCall(api.getQuestions);
-  if (qRes.ok && Array.isArray(qRes.questions) && qRes.questions.length) { questions = qRes.questions; knownTitles = qRes.knownTitles || {}; }
-
-  const tRes = await safeCall(api.getTemplates);
-  if (tRes.ok && Array.isArray(tRes.templates) && tRes.templates.length) templates = tRes.templates;
-
-  const actRes = await safeCall(api.getActivities);
-  if (actRes.ok && Array.isArray(actRes.activities) && actRes.activities.length) activityChoices = actRes.activities;
+  // Prompts, templates and activities live in the encrypted content file now, so
+  // these can legitimately come back ok:false while the journal is locked. The
+  // built-in defaults are fine to SHOW in that case, but saving them back would
+  // replace the person's real ones, so the editors are held read-only until a
+  // successful read proves we know what is actually in there.
+  await loadContentIntoUi();
 
   const gRes = await safeCall(api.getGuided);
   const guidedPref = gRes.ok ? gRes.guided : false;
