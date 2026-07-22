@@ -1296,6 +1296,12 @@ function entryNote(entry) {
 // free-form `note` is handled separately (it is the main body, not a prompt).
 function orderedAnswers(entry, questions, titles) {
   const out = [];
+  // The other entry helpers all guard for this; this one did not, and it is the
+  // one every export builder reaches through entryHasContent. A single null or
+  // non-object day, which ordinary on-disk corruption can produce and which
+  // isValidData does not catch (it only checks the entries CONTAINER), threw
+  // "Cannot read properties of null" and took down every export format at once.
+  if (!entry || typeof entry !== 'object') return out;
   const qkeys = new Set(questions.map((q) => q.key));
   for (const q of questions) {
     const v = entry[q.key];
@@ -1325,6 +1331,11 @@ function entryHasContent(entry, questions, titles) {
 }
 
 function contentDates(data, questions, titles) {
+  // A null or non-object day is filtered out here by entryHasContent returning
+  // false, because every entry helper it calls (including orderedAnswers) now
+  // guards for it. That single guard is what keeps a corrupt day out of all five
+  // builders; a second filter here would be redundant with it and, being
+  // redundant, would leave the harness unable to prove either one is load-bearing.
   return Object.keys(data.entries)
     .filter((date) => entryHasContent(data.entries[date], questions, titles))
     .sort();
@@ -2187,14 +2198,27 @@ async function purgePlaintextIn(dir, pattern, sweepTmp = true) {
     const isTmp = sweepTmp && name.endsWith('.tmp');
     if (!pattern.test(name) && !isTmp) continue;
     const full = path.join(dir, name);
+    if (!isTmp) {
+      // Deciding keep-or-remove and the removal itself used to share one try, so
+      // a file that read fine but would not PARSE (a truncated or half-written
+      // plaintext copy, which is the usual reason one gets quarantined) threw at
+      // JSON.parse, jumped straight past the unlink, and was then counted as
+      // "could not be removed", advice to retry that no retry could satisfy,
+      // while a readable copy of the diary stayed on disk. Split them: a parse
+      // failure means "not provably a vault", which is exactly what must be
+      // removed. Only a file we cannot even READ is kept, because deleting a
+      // vault we merely failed to open this moment would be real data loss.
+      let content;
+      try { content = await fsp.readFile(full, 'utf8'); }
+      catch { left++; continue; }
+      let parsed = null;
+      try { parsed = JSON.parse(content); } catch { parsed = null; }
+      if (parsed && vaultCrypto.isVault(parsed)) continue; // already encrypted, keep it
+    }
     try {
-      if (!isTmp) {
-        const parsed = JSON.parse(await fsp.readFile(full, 'utf8'));
-        if (vaultCrypto.isVault(parsed)) continue; // already encrypted, keep it
-      }
       await fsp.unlink(full);
     } catch {
-      left++;
+      left++; // a genuine removal failure (a lock, a permission): this one IS retryable
     }
   }
   return left;
@@ -2325,8 +2349,23 @@ function enableEncryption(pin) {
     // prompts readable but loses nothing, and reconcileContentFile retries it on
     // the next unlock. It is reported rather than swallowed.
     let contentSealed = true;
-    try { await writeContentWith(dk, contentToSeal || {}); }
-    catch { contentSealed = false; }
+    try {
+      await writeContentWith(dk, contentToSeal || {});
+      // Strip the four fields from settings.json, if they are still there. On an
+      // install that predates content.json, or one where the boot-time migration
+      // strip was swallowed by a transient lock, readContentWith(null) carried
+      // them out of settings.json but never removed them. Sealing content.json
+      // without this leaves a fully readable copy of the prompts and templates in
+      // plaintext beside the encrypted journal, which is precisely the leak the
+      // split exists to close. loadContent's migration only strips when it writes
+      // content.json itself, and it never runs again once the file exists, so the
+      // strip has to happen here too.
+      const s = await loadSettings().catch(() => null);
+      if (s && CONTENT_KEYS.some((k) => k in s)) {
+        for (const k of CONTENT_KEYS) delete s[k];
+        await saveSettings(s);
+      }
+    } catch { contentSealed = false; }
 
     // Everything past this point is tidying, and the vault is already committed.
     // If any of it throws, the recovery code would be lost forever while the

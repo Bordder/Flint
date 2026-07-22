@@ -81,7 +81,14 @@ const MUTANTS = [
   { id: 'S-5 migration strips the words out of settings.json', file: 'store.js',
     occurrence: 1, from: 'for (const k of CONTENT_KEYS) delete s[k];', to: '' },
   { id: 'S-6 dropping the key drops the decrypted content cache', file: 'store.js',
-    from: '  // comes through here, so this is the one place it has to happen.', to: '  return;' }
+    from: '  // comes through here, so this is the one place it has to happen.', to: '  return;' },
+  // Found by the pentest. Each turns a confirmed, PoC-reproduced defect back on.
+  { id: 'P-M2 enable strips the four fields from settings.json', file: 'store.js',
+    from: 'if (s && CONTENT_KEYS.some((k) => k in s)) {', to: 'if (false) {' },
+  { id: 'P-L1 an unparseable quarantined copy is removed, not kept', file: 'store.js',
+    from: 'if (parsed && vaultCrypto.isVault(parsed)) continue;', to: 'if (parsed || !parsed) continue;' },
+  { id: 'P-L2 a null day cannot crash an export', file: 'store.js',
+    from: "if (!entry || typeof entry !== 'object') return out;", to: '' }
   // NOT listed: the stat-size check in addMedia. Removing it leaves behaviour
   // identical, because the post-read check refuses the same file: what it costs
   // is reading a huge file into memory first. That is a real property but not an

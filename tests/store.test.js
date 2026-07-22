@@ -1573,6 +1573,96 @@ async function main() {
     }
   });
 
+  await test('PENTEST-M2: enabling encryption strips the four fields from a legacy settings.json', async () => {
+    // Found by a running pentest PoC: enableEncryption sealed content.json but
+    // left the same prompts, template bodies and activity names readable in
+    // settings.json, on any install that still carried them there (a pre-split
+    // upgrade, or one whose boot-time migration strip was swallowed by a lock).
+    // enableEncryption returned ok:true with no warning while a full plaintext
+    // copy of the person's own words sat beside the encrypted journal.
+    const rootM = tempRoot('flint-m2-');
+    const PMX = store.init(rootM);
+    try {
+      await store.saveData(store.emptyData());
+      // Exactly the pre-content.json shape, and NO getMedia/loadContent call
+      // first, so the boot migration has not run.
+      fs.mkdirSync(PMX.dataDir, { recursive: true });
+      fs.writeFileSync(PMX.settingsFile, JSON.stringify({
+        theme: 'dark', hardwareAcceleration: false,
+        templates: [{ name: 'Evening', body: 'PLAINTEXT_TEMPLATE_SECRET' }],
+        questions: [{ key: 'mood', title: 'PLAINTEXT_PROMPT_SECRET' }],
+        activities: ['PLAINTEXT_ACTIVITY_SECRET']
+      }, null, 2));
+
+      assert.strictEqual((await store.enableEncryption('1234')).ok, true, 'encrypted');
+
+      const s = fs.readFileSync(PMX.settingsFile, 'utf8');
+      assert.ok(!s.includes('PLAINTEXT_TEMPLATE_SECRET'), 'template body stripped from settings.json');
+      assert.ok(!s.includes('PLAINTEXT_PROMPT_SECRET'), 'prompt title stripped');
+      assert.ok(!s.includes('PLAINTEXT_ACTIVITY_SECRET'), 'activity stripped');
+      assert.ok(JSON.parse(s).theme === 'dark', 'unrelated settings untouched');
+      // and the words are sealed, not simply gone
+      const c = fs.readFileSync(PMX.contentFile);
+      assert.strictEqual(c.subarray(0, 9).toString('latin1'), 'FLINTSET1', 'content.json is sealed');
+      assert.ok(!c.toString('utf8').includes('PLAINTEXT_TEMPLATE_SECRET'), 'and not readable there either');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  await test('PENTEST-L1: an unparseable quarantined copy is removed, not reported as stuck', async () => {
+    // Found by a running pentest PoC: purgePlaintextIn ran JSON.parse and unlink
+    // in one try, so a readable-but-invalid-JSON copy (the usual reason a file is
+    // quarantined) threw before the unlink and was counted as "could not be
+    // removed", advice no retry could satisfy, while readable diary text stayed
+    // on disk after encryption was turned on.
+    const rootL = tempRoot('flint-l1-');
+    const PLX = store.init(rootL);
+    try {
+      const d = store.emptyData();
+      d.entries['2026-01-01'] = { note: 'a real entry so the journal is not empty', updatedAt: 'x' };
+      await store.saveData(d);
+      const unparseable = path.join(PLX.dataDir, 'entries.json.corrupt-9999');
+      fs.writeFileSync(unparseable, 'READABLE_DIARY_TEXT but not valid json {{{');
+      // A genuine vault, so the "already encrypted, keep it" branch is exercised
+      // for real rather than against a shape isVault would reject anyway.
+      const vaultCrypto = require('../crypto');
+      const { vault } = await vaultCrypto.createVault({ version: 1, entries: {} }, 'anotherpin1');
+      const aVault = path.join(PLX.dataDir, 'entries.json.corrupt-8888');
+      fs.writeFileSync(aVault, JSON.stringify(vault));
+
+      const res = await store.enableEncryption('strongpass99');
+      assert.strictEqual(res.ok, true, 'encrypted');
+      assert.ok(!fs.existsSync(unparseable), 'the unparseable plaintext copy was removed');
+      assert.ok(fs.existsSync(aVault), 'but a copy that IS a vault is kept');
+      assert.deepStrictEqual(res.leftovers || [], [], 'and nothing is falsely reported as unremovable');
+    } finally {
+      store.lock();
+      store.init(root);
+    }
+  });
+
+  await test('PENTEST-L2: a null or non-object day never crashes an export', async () => {
+    // Found by a running pentest PoC: isValidData validates the entries container
+    // but never each day, so a single null day (ordinary corruption) reached
+    // orderedAnswers, which dereferenced it, and took down every export format.
+    store.init(tempRoot('flint-l2-'));
+    const bad = { version: 1, entries: {
+      '2025-01-01': null, '2025-01-02': [1, 2, 3], '2025-01-03': 'a string',
+      '2025-01-04': { note: 'a genuine entry that must still export' }
+    } };
+    const opts = { questions: store.DEFAULT_QUESTIONS, knownTitles: {} };
+    for (const build of ['buildExportText', 'buildExportMarkdown', 'buildExportHtml', 'buildActivityReport', 'buildActivityReportHtml']) {
+      let out;
+      assert.doesNotThrow(() => { out = store[build](bad, opts); }, `${build} survives a corrupt day`);
+      assert.strictEqual(typeof out, 'string', `${build} still produced output`);
+    }
+    // the one good day is still present in a full export
+    assert.match(store.buildExportText(bad, opts), /genuine entry that must still export/, 'the valid day still exports');
+    store.init(root);
+  });
+
   await test('M5: the PIN meter prices a known-weak PIN by the wordlist, not the character set', async () => {
     // common-pins.js existed with no test at all, which is a poor state for the
     // one file whose entire job is to stop the meter lying. The estimator lives
