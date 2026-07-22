@@ -55,16 +55,31 @@ Before you publish, make sure the build is sound:
   fine for what this gate catches (stray files in the project folder are identical
   across both builds) but is not a guarantee about the uploaded bytes. If you want
   that guarantee, use the manual path: `npm run dist`, then upload from `dist\`.
-  It inspects what actually went
-  into the build and refuses to publish if a username, home path, session id or dev
-  folder is present. `build.files` is a denylist starting from everything on disk, so
-  anything new in the project root ships by default, and `.gitignore` has no say in it.
-  A privacy check against the git diff cannot catch this: that is how 1.4.3 through
-  1.5.0 shipped a `.claude` folder.
-- After `npm run dist`, `dist\` holds exactly three release files,
-  `Flint-Setup-<version>.exe`, its `.exe.blockmap`, and `latest.yml`, and `latest.yml`'s
-  `version` matches the exe. A missing or stale `latest.yml` or `.blockmap` silently
-  breaks auto-update for every existing user, so never skip this.
+  It inspects what actually went into the build and refuses if a username, home path,
+  session id or dev folder is present.
+- `build.files` in `package.json` is an ALLOWLIST: it names the files that belong in
+  the app, and anything not named is left out. It used to start from `**/*` and
+  subtract known-bad folders, which shipped everything in the project directory unless
+  someone remembered to exclude it. `.gitignore` has no say in what electron-builder
+  packs, so a gitignored folder was invisible to a privacy check run against the git
+  diff. That combination is how 1.4.3 through 1.5.0 shipped a `.claude` folder. If you
+  add a file the app needs at runtime, add it to that list or it will not ship.
+- After `npm run dist`, upload exactly three files: `Flint-Setup-<version>.exe`, its
+  `.exe.blockmap`, and `latest.yml`, and check `latest.yml`'s `version` matches the exe.
+  A missing or stale `latest.yml` or `.blockmap` silently breaks auto-update for every
+  existing user, so never skip this.
+- `dist\` does NOT hold only those three. Every build you have ever run is still in
+  there, because nothing cleans it. That is how installers from 1.4.3 to 1.5.0, which
+  contain the `.claude` folder, sat on disk long after the published copies were
+  deleted. Delete old `Flint-Setup-*` files once a release is out, and take the
+  filenames from the version you just built rather than from whatever is newest in the
+  folder.
+- **Commit the version bump BEFORE building.** 1.5.1 was built from a working tree whose
+  fixes were not committed until 55 minutes later, so its tag pointed at the previous
+  version's commit and its source zip contradicted its own release notes. Building from
+  a committed tree, and creating the release against `main`, makes the tag correct by
+  construction. Check it afterwards: the tag should name the commit that bumped the
+  version.
 - Note the version's changes for the release body (a committed `CHANGELOG.md` at the
   repo root is worth starting, so the history survives outside the gitignored `dist`).
 
@@ -85,11 +100,12 @@ curl -sI https://github.com/Bordder/Flint/releases/download/v<version>/latest.ym
 
 Then:
 
-1. Bump `"version"` in `package.json`.
-2. Run `npm run dist`.
+1. Bump `"version"` in `package.json`, then **commit and push it**. Do this before
+   building, so the tag ends up naming the tree the installer came from.
+2. Run `npm run dist`. It builds, then runs `check:package` on the result.
 3. Create a release at `https://github.com/Bordder/Flint/releases/new`, set the
-   tag to `v` plus that version (for example `v1.2.0`), and drag all three files
-   from your `dist\` folder onto it, then Publish:
+   tag to `v` plus that version (for example `v1.2.0`), leave the target as `main`,
+   and drag all three files from your `dist\` folder onto it, then Publish:
    - `Flint-Setup-<version>.exe`
    - `Flint-Setup-<version>.exe.blockmap`
    - `latest.yml`
